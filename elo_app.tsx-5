@@ -22,7 +22,7 @@ import {
 } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyBM1oHsNGy32Tocg2OSalSPjincluF5qFc",
+  apiKey: "YOUR_API_KEY",
   authDomain: "elo-1-777.firebaseapp.com",
   projectId: "elo-1-777",
   storageBucket: "elo-1-777.firebasestorage.app",
