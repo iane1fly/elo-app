@@ -1,4 +1,6 @@
 import React from 'react';
+import React from 'react';
+import logo from './logo.png'; // Substitui 'logo.png' pelo nome exato do teu ficheiro
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 
@@ -16,7 +18,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#f5f5f7] flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans text-gray-900">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
-        <h1 className="text-center text-4xl font-semibold tracking-tight">Elo</h1>
+        <img src={logo} alt="Elo" className="mx-auto h-20 w-auto" />
         <h2 className="mt-4 text-center text-xl text-gray-600">
           Criar Conta de Fundador
         </h2>
