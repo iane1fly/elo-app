@@ -1,13 +1,23 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
+  onAuthStateChanged,
   signInWithPopup, 
   GoogleAuthProvider, 
   GithubAuthProvider,
   signInWithEmailAndPassword,
-  createUserWithEmailAndPassword
+  createUserWithEmailAndPassword,
+  signOut,
+  User
 } from 'firebase/auth';
+import { 
+  getFirestore, 
+  doc, 
+  onSnapshot, 
+  setDoc, 
+  serverTimestamp 
+} from 'firebase/firestore';
 import logo from './logo.png';
 
 const firebaseConfig = {
@@ -21,52 +31,288 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const db = getFirestore(app);
+
+type AccessStatus = 'none' | 'pending' | 'approved' | 'rejected';
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [accessStatus, setAccessStatus] = useState<AccessStatus>('none');
+  
+  // Estados do formulário de auth
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
-  // Login com Google
+  // Estados do Onboarding (Multi-step profile)
+  const [step, setStep] = useState(1);
+  const [profileData, setProfileData] = useState({
+    name: '',
+    location: '',
+    role: '',
+    company: '',
+    pitch: '',
+    lookingFor: ''
+  });
+
+  // 1. Listener de Estado de Autenticação + Firestore Status (Ponto 3)
+  useEffect(() => {
+    let unsubscribeSnapshot: () => void;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+
+      if (currentUser) {
+        // Escutar alterações em tempo real no documento accessRequests
+        const docRef = doc(db, 'accessRequests', currentUser.uid);
+        unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setAccessStatus(data.status as AccessStatus);
+          } else {
+            setAccessStatus('none'); // Reencaminha para o Onboarding
+          }
+          setLoading(false);
+        }, (err) => {
+          console.error("Erro ao escutar Firestore:", err);
+          setError("Erro ao carregar dados do perfil.");
+          setLoading(false);
+        });
+      } else {
+        if (unsubscribeSnapshot) unsubscribeSnapshot();
+        setAccessStatus('none');
+        setUser(null);
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeSnapshot) unsubscribeSnapshot();
+    };
+  }, []);
+
+  // Handlers de Auth (Sem alerts — Ponto 1 & 4)
   const handleGoogleLogin = async () => {
+    setError('');
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-      alert('Login com Google efetuado com sucesso!');
     } catch (err: any) {
       setError(err.message);
     }
   };
 
-  // Login com GitHub
   const handleGithubLogin = async () => {
+    setError('');
     try {
       const provider = new GithubAuthProvider();
       await signInWithPopup(auth, provider);
-      alert('Login com GitHub efetuado com sucesso!');
     } catch (err: any) {
       setError(err.message);
     }
   };
 
-  // Login ou Registo por Email/Password
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     try {
       if (isSignUp) {
         await createUserWithEmailAndPassword(auth, email, password);
-        alert('Conta criada com sucesso!');
       } else {
         await signInWithEmailAndPassword(auth, email, password);
-        alert('Sessão iniciada com sucesso!');
       }
     } catch (err: any) {
       setError(err.message);
     }
   };
 
+  const handleLogout = () => signOut(auth);
+
+  // Submeter pedido de acesso ao concluir o Onboarding
+  const handleProfileSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+
+    try {
+      await setDoc(doc(db, 'accessRequests', user.uid), {
+        uid: user.uid,
+        email: user.email,
+        ...profileData,
+        status: 'pending',
+        createdAt: serverTimestamp()
+      });
+    } catch (err: any) {
+      setError("Erro ao enviar o pedido de acesso.");
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#f5f5f7] flex items-center justify-center font-sans">
+        <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-black"></div>
+      </div>
+    );
+  }
+
+  // 2. Encaminhamento condicional segundo o status do documento (Ponto 2)
+  if (user) {
+    // 2.d Aprovado -> Feed Principal
+    if (accessStatus === 'approved') {
+      return (
+        <div className="min-h-screen bg-[#f5f5f7] p-8 font-sans">
+          <header className="max-w-4xl mx-auto flex justify-between items-center mb-8">
+            <img src={logo} alt="Elo" className="h-10 w-auto" />
+            <button onClick={handleLogout} className="text-xs text-gray-500 hover:text-black">
+              Sair
+            </button>
+          </header>
+          <main className="max-w-4xl mx-auto bg-white p-8 rounded-2xl border border-gray-200 shadow-sm">
+            <h1 className="text-2xl font-bold mb-4">Feed Elo</h1>
+            <p className="text-gray-600">Bem-vindo à rede exclusiva.</p>
+          </main>
+        </div>
+      );
+    }
+
+    // 2.c Pendente -> Ecrã de Espera
+    if (accessStatus === 'pending') {
+      return (
+        <div className="min-h-screen bg-[#f5f5f7] flex flex-col justify-center items-center p-6 font-sans text-center">
+          <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm max-w-md w-full">
+            <img src={logo} alt="Elo" className="mx-auto h-16 w-auto mb-4" />
+            <h2 className="text-xl font-semibold mb-2">Pedido Enviado</h2>
+            <p className="text-sm text-gray-500 mb-6">
+              O teu perfil está sob análise. Notificar-te-emos assim que o teu acesso for aprovado.
+            </p>
+            <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-black">
+              Sair da conta
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // 2.e Rejeitado -> Ecrã de Rejeição
+    if (accessStatus === 'rejected') {
+      return (
+        <div className="min-h-screen bg-[#f5f5f7] flex flex-col justify-center items-center p-6 font-sans text-center">
+          <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm max-w-md w-full">
+            <img src={logo} alt="Elo" className="mx-auto h-16 w-auto mb-4" />
+            <h2 className="text-xl font-semibold text-red-600 mb-2">Acesso Não Aprovado</h2>
+            <p className="text-sm text-gray-500 mb-6">
+              Lamentamos, mas a tua candidatura ao Elo não foi aceite neste momento.
+            </p>
+            <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-black">
+              Sair
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // 2.b Novo utilizador (sem documento) -> Flow de Completação de Perfil Multi-step
+    return (
+      <div className="min-h-screen bg-[#f5f5f7] flex flex-col justify-center items-center p-6 font-sans">
+        <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm max-w-md w-full">
+          <img src={logo} alt="Elo" className="mx-auto h-16 w-auto mb-4" />
+          <div className="mb-6 flex justify-between text-xs text-gray-400 font-medium">
+            <span className={step >= 1 ? "text-black" : ""}>1. Dados</span>
+            <span className={step >= 2 ? "text-black" : ""}>2. Percurso</span>
+            <span className={step >= 3 ? "text-black" : ""}>3. Objetivos</span>
+          </div>
+
+          <form onSubmit={step === 3 ? handleProfileSubmit : (e) => { e.preventDefault(); setStep(step + 1); }}>
+            {step === 1 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold text-base">Quem és?</h3>
+                <input 
+                  type="text" 
+                  placeholder="Nome Completo" 
+                  value={profileData.name} 
+                  onChange={(e) => setProfileData({...profileData, name: e.target.value})}
+                  required 
+                  className="w-full border border-gray-300 rounded-lg p-2.5 text-sm"
+                />
+                <input 
+                  type="text" 
+                  placeholder="Localização (ex: Lisboa, Portugal)" 
+                  value={profileData.location} 
+                  onChange={(e) => setProfileData({...profileData, location: e.target.value})}
+                  required 
+                  className="w-full border border-gray-300 rounded-lg p-2.5 text-sm"
+                />
+              </div>
+            )}
+
+            {step === 2 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold text-base">O teu projeto</h3>
+                <input 
+                  type="text" 
+                  placeholder="Cargo / Posição" 
+                  value={profileData.role} 
+                  onChange={(e) => setProfileData({...profileData, role: e.target.value})}
+                  required 
+                  className="w-full border border-gray-300 rounded-lg p-2.5 text-sm"
+                />
+                <input 
+                  type="text" 
+                  placeholder="Empresa / Projeto" 
+                  value={profileData.company} 
+                  onChange={(e) => setProfileData({...profileData, company: e.target.value})}
+                  required 
+                  className="w-full border border-gray-300 rounded-lg p-2.5 text-sm"
+                />
+                <textarea 
+                  placeholder="Pitch curto (1-2 frases)" 
+                  value={profileData.pitch} 
+                  onChange={(e) => setProfileData({...profileData, pitch: e.target.value})}
+                  required 
+                  className="w-full border border-gray-300 rounded-lg p-2.5 text-sm h-20"
+                />
+              </div>
+            )}
+
+            {step === 3 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold text-base">O que procuras no Elo?</h3>
+                <textarea 
+                  placeholder="Ex: Mentores, Co-founders, Investimento..." 
+                  value={profileData.lookingFor} 
+                  onChange={(e) => setProfileData({...profileData, lookingFor: e.target.value})}
+                  required 
+                  className="w-full border border-gray-300 rounded-lg p-2.5 text-sm h-28"
+                />
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-between gap-3">
+              {step > 1 && (
+                <button 
+                  type="button" 
+                  onClick={() => setStep(step - 1)} 
+                  className="w-1/2 py-2.5 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50"
+                >
+                  Voltar
+                </button>
+              )}
+              <button 
+                type="submit" 
+                className={`py-2.5 bg-black text-white rounded-lg text-sm font-medium hover:bg-gray-800 ${step === 1 ? 'w-full' : 'w-1/2'}`}
+              >
+                {step === 3 ? 'Submeter Pedido' : 'Continuar'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // Formulário Inicial de Entrar / Registar
   return (
     <div className="min-h-screen bg-[#f5f5f7] flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans text-gray-900">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
@@ -151,7 +397,7 @@ export default function App() {
               {isSignUp ? 'Já tens conta? Entrar' : 'Não tens conta? Criar uma'}
             </button>
           </div>
-          
+
         </div>
       </div>
     </div>
