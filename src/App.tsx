@@ -29,12 +29,13 @@ import {
   addDoc,
   orderBy,
   arrayUnion,
-  arrayRemove
+  arrayRemove,
+  getCountFromServer
 } from 'firebase/firestore';
-import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon, Menu, X, Inbox, Users, Bell } from 'lucide-react';
+import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Camera, Palette, Shield, Pencil, Calendar, MapPin, Linkedin, Plus } from 'lucide-react';
 import logo from './logo.png';
 
-const ADMIN_UID = 'eExYyC3FRsOkSIbzy1tENc41nDm2';
+const ADMIN_UID = 'ADMIN_MASTER_UID_ELO';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -91,29 +92,31 @@ interface NotificationItem {
   read: boolean;
 }
 
+interface EloEvent {
+  id: string;
+  title: string;
+  description: string;
+  date: string;
+  time: string;
+  location: string;
+  capacity: string;
+  attendees: string[];
+  createdBy: string;
+}
+
 class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean}> {
   constructor(props: {children: React.ReactNode}) {
     super(props);
     this.state = { hasError: false };
   }
-
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-
-  componentDidCatch(error: any, errorInfo: any) {
-    console.error("App Error Boundary Catch:", error, errorInfo);
-  }
-
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error: any, errorInfo: any) { console.error("App Error Boundary Catch:", error, errorInfo); }
   render() {
     if (this.state.hasError) {
       return (
         <div className="min-h-screen bg-[#f5f5f7] dark:bg-black text-black dark:text-white flex flex-col justify-center items-center font-sans">
           <h1 className="text-xl font-bold mb-4">Algo correu mal.</h1>
-          <button 
-            onClick={() => window.location.reload()} 
-            className="px-4 py-2 bg-black text-white dark:bg-white dark:text-black rounded-lg text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-black dark:focus-visible:ring-white"
-          >
+          <button onClick={() => window.location.reload()} className="px-4 py-2 bg-black text-white dark:bg-white dark:text-black rounded-lg text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-black dark:focus-visible:ring-white">
             Recarrega a página
           </button>
         </div>
@@ -131,9 +134,10 @@ function MainApp() {
   const [editFormData, setEditFormData] = useState<UserProfile | null>(null);
 
   const [currentTab, setCurrentTab] = useState<'feed' | 'rede' | 'notificacoes' | 'perfil'>('feed');
-  const [activeModal, setActiveModal] = useState<'none' | 'settings' | 'planos' | 'ai' | 'admin' | 'createPost'>('none');
+  const [activeModal, setActiveModal] = useState<'none' | 'settings' | 'planos' | 'ai' | 'admin' | 'createPost' | 'createMeeting' | 'createEvent'>('none');
   const [viewingProfileUid, setViewingProfileUid] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
 
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => localStorage.getItem('elo_theme') === 'dark');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -144,9 +148,7 @@ function MainApp() {
   const [authError, setAuthError] = useState('');
 
   const [onboardingStep, setOnboardingStep] = useState(1);
-  const [onboardingData, setOnboardingData] = useState({
-    name: '', location: '', role: '', company: '', pitch: '', lookingFor: ''
-  });
+  const [onboardingData, setOnboardingData] = useState({ name: '', location: '', role: '', company: '', pitch: '', lookingFor: '' });
 
   const [fetchingPosts, setFetchingPosts] = useState(true);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -163,6 +165,13 @@ function MainApp() {
   const [networkUsers, setNetworkUsers] = useState<UserProfile[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [followingUids, setFollowingUids] = useState<string[]>([]);
+
+  const [events, setEvents] = useState<EloEvent[]>([]);
+
+  const [meetingData, setMeetingData] = useState({ targetUid: '', date: '', time: '', message: '' });
+  const [eventData, setEventData] = useState({ title: '', description: '', date: '', time: '', location: '', capacity: '' });
+
+  const [activeProfilePostCount, setActiveProfilePostCount] = useState<number | null>(null);
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([
     { id: 'n1', type: 'follow', text: 'Beatriz Costa começou a seguir o teu perfil.', timestamp: 'Há 10m', read: false },
@@ -192,6 +201,10 @@ function MainApp() {
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+    e.currentTarget.style.display = 'none';
   };
 
   useEffect(() => {
@@ -230,7 +243,10 @@ function MainApp() {
             setUserProfile(null);
           }
           setLoading(false);
-        }, () => setLoading(false));
+        }, () => {
+          showToast("Erro ao carregar dados. Tenta recarregar a página.");
+          setLoading(false);
+        });
       } else {
         if (unsubscribeSnapshot) unsubscribeSnapshot();
         setAccessStatus('none');
@@ -258,7 +274,12 @@ function MainApp() {
       const unsubPosts = onSnapshot(qPosts, snap => {
         setPosts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Post)));
         setFetchingPosts(false);
-      });
+      }, () => showToast("Erro ao carregar dados. Tenta recarregar a página."));
+
+      const qEvents = query(collection(db, 'events'), orderBy('date', 'asc'));
+      const unsubEvents = onSnapshot(qEvents, snap => {
+        setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() } as EloEvent)));
+      }, () => showToast("Erro ao carregar dados. Tenta recarregar a página."));
 
       setRssLoading(true);
       fetch('https://api.rss2json.com/v1/api.json?rss_url=https://techcrunch.com/feed/')
@@ -272,7 +293,7 @@ function MainApp() {
         .catch(() => setRssError(true))
         .finally(() => setRssLoading(false));
 
-      return () => unsubPosts();
+      return () => { unsubPosts(); unsubEvents(); };
     }
   }, [accessStatus]);
 
@@ -287,25 +308,44 @@ function MainApp() {
         });
         setNetworkUsers(users);
         setFetchingNetwork(false);
-      });
+      }, () => showToast("Erro ao carregar dados. Tenta recarregar a página."));
       return () => unsubNetwork();
     }
   }, [accessStatus, user]);
 
   useEffect(() => {
-    if (activeModal === 'admin' && (user?.uid === ADMIN_UID || userProfile?.role === 'Admin')) {
+    if (activeModal === 'admin' && user?.uid === ADMIN_UID) {
       const qPending = query(collection(db, 'accessRequests'), where('status', '==', 'pending'));
       getDocs(qPending).then(snap => setPendingRequests(snap.docs.map(d => d.data() as UserProfile)));
       const qApproved = query(collection(db, 'accessRequests'), where('status', '==', 'approved'));
       getDocs(qApproved).then(snap => setApprovedMembers(snap.docs.map(d => d.data() as UserProfile)));
     }
-  }, [activeModal, user, userProfile]);
+  }, [activeModal, user]);
 
   useEffect(() => {
     if (activeModal === 'settings' && settingsTab === 'perfil' && userProfile) {
       setEditFormData({ ...userProfile });
     }
   }, [activeModal, settingsTab, userProfile]);
+
+  useEffect(() => {
+    if (currentTab === 'perfil') {
+      const targetUid = viewingProfileUid || user?.uid;
+      if (targetUid) {
+        const fetchPostCount = async () => {
+          try {
+            const coll = collection(db, 'posts');
+            const q = query(coll, where('authorUid', '==', targetUid));
+            const snapshot = await getCountFromServer(q);
+            setActiveProfilePostCount(snapshot.data().count);
+          } catch (e) {
+            setActiveProfilePostCount(null);
+          }
+        };
+        fetchPostCount();
+      }
+    }
+  }, [currentTab, viewingProfileUid, user?.uid]);
 
   const handleGoogleLogin = async () => {
     setAuthError('');
@@ -325,7 +365,14 @@ function MainApp() {
     try {
       if (isSignUp) await createUserWithEmailAndPassword(auth, emailInput, passwordInput);
       else await signInWithEmailAndPassword(auth, emailInput, passwordInput);
-    } catch (err: any) { setAuthError(err.message); }
+    } catch (err: any) {
+      let msg = "Erro na autenticação.";
+      if (err.code === 'auth/invalid-email') msg = "Email inválido.";
+      else if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') msg = "Password incorreta.";
+      else if (err.code === 'auth/email-already-in-use') msg = "Este email já está registado. Tenta entrar em vez de criar conta.";
+      else if (err.code === 'auth/weak-password') msg = "A palavra-passe deve ter pelo menos 6 caracteres.";
+      setAuthError(msg);
+    }
   };
 
   const handleLogout = () => { setActiveModal('none'); signOut(auth); };
@@ -367,13 +414,52 @@ function MainApp() {
     }
   };
 
+  const handleCreateMeeting = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !meetingData.targetUid || !meetingData.date || !meetingData.time) return;
+    const targetUser = networkUsers.find(u => u.uid === meetingData.targetUid);
+    if (!targetUser) return;
+    try {
+      await addDoc(collection(db, 'meetings'), {
+        requesterUid: user.uid,
+        requesterName: userProfile?.name || 'Membro',
+        targetUid: targetUser.uid,
+        targetName: targetUser.name,
+        message: meetingData.message,
+        proposedDateTime: `${meetingData.date}T${meetingData.time}`,
+        status: 'pending',
+        createdAt: serverTimestamp()
+      });
+      setMeetingData({ targetUid: '', date: '', time: '', message: '' });
+      setActiveModal('none');
+      showToast('Reunião agendada com sucesso!');
+    } catch (err) {
+      showToast('Erro ao agendar reunião.');
+    }
+  };
+
+  const handleCreateEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || user.uid !== ADMIN_UID || !eventData.title || !eventData.date || !eventData.time || !eventData.location) return;
+    try {
+      await addDoc(collection(db, 'events'), {
+        ...eventData,
+        attendees: [],
+        createdBy: user.uid,
+        createdAt: serverTimestamp()
+      });
+      setEventData({ title: '', description: '', date: '', time: '', location: '', capacity: '' });
+      setActiveModal('none');
+      showToast('Evento criado com sucesso!');
+    } catch (err) {
+      showToast('Erro ao criar evento.');
+    }
+  };
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 2 * 1024 * 1024) {
-        showToast('Imagem demasiado grande. Máximo 2MB.');
-        return;
-      }
+      if (file.size > 2 * 1024 * 1024) { showToast('Imagem demasiado grande. Máximo 2MB.'); return; }
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
@@ -401,10 +487,7 @@ function MainApp() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, field: 'avatarUrl' | 'coverUrl') => {
     const file = e.target.files?.[0];
     if (file && editFormData) {
-      if (file.size > 2 * 1024 * 1024) {
-        showToast('Imagem demasiado grande. Máximo 2MB.');
-        return;
-      }
+      if (file.size > 2 * 1024 * 1024) { showToast('Imagem demasiado grande. Máximo 2MB.'); return; }
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
@@ -431,25 +514,27 @@ function MainApp() {
 
   const toggleLike = async (postId: string, currentLikes: string[]) => {
     if (!user) return;
-    const postRef = doc(db, 'posts', postId);
-    const hasLiked = currentLikes.includes(user.uid);
-    await updateDoc(postRef, {
-      likes: hasLiked ? arrayRemove(user.uid) : arrayUnion(user.uid)
-    });
+    try {
+      const postRef = doc(db, 'posts', postId);
+      const hasLiked = currentLikes.includes(user.uid);
+      await updateDoc(postRef, { likes: hasLiked ? arrayRemove(user.uid) : arrayUnion(user.uid) });
+    } catch (err) { showToast('Erro ao atualizar gosto.'); }
   };
 
   const handleAddComment = async (postId: string) => {
     if (!commentInput.trim() || !user) return;
-    const postRef = doc(db, 'posts', postId);
-    await updateDoc(postRef, {
-      comments: arrayUnion({
-        id: Date.now().toString(),
-        authorName: userProfile?.name || 'Utilizador',
-        text: commentInput,
-        timestamp: new Date().toLocaleDateString('pt-PT', { hour: '2-digit', minute: '2-digit' })
-      })
-    });
-    setCommentInput('');
+    try {
+      const postRef = doc(db, 'posts', postId);
+      await updateDoc(postRef, {
+        comments: arrayUnion({
+          id: Date.now().toString(),
+          authorName: userProfile?.name || 'Utilizador',
+          text: commentInput,
+          timestamp: new Date().toLocaleDateString('pt-PT', { hour: '2-digit', minute: '2-digit' })
+        })
+      });
+      setCommentInput('');
+    } catch (err) { showToast('Erro ao adicionar comentário.'); }
   };
 
   const handleShare = (postId: string) => {
@@ -465,6 +550,16 @@ function MainApp() {
       setFollowingUids([...followingUids, targetUid]);
       showToast('A seguir perfil.');
     }
+  };
+
+  const toggleEventRSVP = async (eventId: string, currentAttendees: string[]) => {
+    if (!user) return;
+    try {
+      const eventRef = doc(db, 'events', eventId);
+      const isAttending = currentAttendees.includes(user.uid);
+      await updateDoc(eventRef, { attendees: isAttending ? arrayRemove(user.uid) : arrayUnion(user.uid) });
+      showToast(isAttending ? 'Inscrição cancelada.' : 'Inscrito no evento com sucesso!');
+    } catch (err) { showToast('Erro ao atualizar inscrição.'); }
   };
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
@@ -523,10 +618,12 @@ function MainApp() {
 
   const handlePrivacyToggle = async (key: 'visibleInNetwork' | 'acceptsMeetings', val: boolean) => {
     if (!user) return;
-    if (key === 'visibleInNetwork') setVisibleInNetwork(val);
-    if (key === 'acceptsMeetings') setAcceptsMeetings(val);
-    await updateDoc(doc(db, 'accessRequests', user.uid), { [key]: val });
-    showToast('Preferências de privacidade guardadas.');
+    try {
+      if (key === 'visibleInNetwork') setVisibleInNetwork(val);
+      if (key === 'acceptsMeetings') setAcceptsMeetings(val);
+      await updateDoc(doc(db, 'accessRequests', user.uid), { [key]: val });
+      showToast('Preferências de privacidade guardadas.');
+    } catch (err) { showToast('Erro ao guardar privacidade.'); }
   };
 
   const handleAiSend = (e: React.FormEvent) => {
@@ -560,6 +657,12 @@ function MainApp() {
     await updateDoc(doc(db, 'accessRequests', targetUid), { status: 'rejected' });
     setApprovedMembers(approvedMembers.filter(u => u.uid !== targetUid));
     showToast('Acesso revogado.');
+  };
+
+  const parseDate = (timestamp: any) => {
+    if (!timestamp) return '';
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    return date.toLocaleDateString('pt-PT', { month: 'long', year: 'numeric' });
   };
 
   if (loading) {
@@ -668,7 +771,7 @@ function MainApp() {
         <header className="border-b border-gray-200 dark:border-gray-800 sticky top-0 bg-white/80 dark:bg-black/80 backdrop-blur-md z-40">
           <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
             <div className="flex items-center gap-8">
-              <img src={logo} alt="Elo" className="h-8 w-auto dark:invert cursor-pointer" onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} />
+              <img src={logo} alt="Elo" className="h-8 w-auto dark:invert cursor-pointer" onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} />
               <nav className="hidden md:flex gap-6 text-sm font-medium">
                 <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); }} className={`${currentTab === 'feed' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Feed</button>
                 <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); }} className={`${currentTab === 'rede' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Rede</button>
@@ -677,26 +780,50 @@ function MainApp() {
               </nav>
             </div>
             
-            {/* Desktop Right Nav */}
             <div className="hidden md:flex items-center gap-3">
+              <div className="relative">
+                <button onClick={() => setIsCreateMenuOpen(!isCreateMenuOpen)} className={`text-xs bg-black text-white dark:bg-white dark:text-black px-3 py-1.5 rounded-full flex items-center gap-1 ${btnFocus}`}>
+                  <Plus size={14} /> Criar
+                </button>
+                {isCreateMenuOpen && (
+                  <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg flex flex-col p-2 gap-1 z-50 animate-modal">
+                    <button onClick={() => {setActiveModal('createPost'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Nova Publicação</button>
+                    <button onClick={() => {setActiveModal('createMeeting'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Agendar Reunião</button>
+                    {user?.uid === ADMIN_UID && (
+                      <button onClick={() => {setActiveModal('createEvent'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Criar Evento</button>
+                    )}
+                  </div>
+                )}
+              </div>
               <button onClick={() => setActiveModal('ai')} className={`text-xs border border-gray-300 dark:border-gray-800 px-3 py-1.5 rounded-full hover:border-black dark:hover:border-white ${btnFocus}`}>Elo AI</button>
-              <button onClick={() => setActiveModal('planos')} className={`text-xs bg-black text-white dark:bg-white dark:text-black px-3 py-1.5 rounded-full ${btnFocus}`}>Pro</button>
+              <button onClick={() => setActiveModal('planos')} className={`text-xs bg-gray-100 dark:bg-gray-900 text-black dark:text-white px-3 py-1.5 rounded-full ${btnFocus}`}>Pro</button>
               <button onClick={() => setActiveModal('settings')} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white ${btnFocus}`}>Definições</button>
-              {(user.uid === ADMIN_UID || userProfile?.role === 'Admin') && <button onClick={() => setActiveModal('admin')} className={`text-xs border border-gray-400 px-2 py-1 rounded ${btnFocus}`}>Admin</button>}
+              {user.uid === ADMIN_UID && <button onClick={() => setActiveModal('admin')} className={`text-xs border border-gray-400 px-2 py-1 rounded ${btnFocus}`}>Admin</button>}
               <button onClick={handleLogout} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white ${btnFocus}`}>Sair</button>
             </div>
 
-            {/* Mobile Hamburger Menu */}
-            <div className="md:hidden relative">
+            <div className="md:hidden relative flex items-center gap-2">
+              <button onClick={() => setIsCreateMenuOpen(!isCreateMenuOpen)} className={`text-xs bg-black text-white dark:bg-white dark:text-black px-3 py-1.5 rounded-full flex items-center gap-1 ${btnFocus}`}>
+                <Plus size={14} /> Criar
+              </button>
+              {isCreateMenuOpen && (
+                <div className="absolute right-10 top-10 mt-2 w-48 bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg flex flex-col p-2 gap-1 z-50 animate-modal">
+                  <button onClick={() => {setActiveModal('createPost'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Nova Publicação</button>
+                  <button onClick={() => {setActiveModal('createMeeting'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Agendar Reunião</button>
+                  {user?.uid === ADMIN_UID && (
+                    <button onClick={() => {setActiveModal('createEvent'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Criar Evento</button>
+                  )}
+                </div>
+              )}
               <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className={`p-2 text-gray-600 dark:text-gray-300 ${btnFocus}`}>
                 {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
               </button>
               {isMobileMenuOpen && (
-                <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg flex flex-col p-2 gap-1 z-50 animate-modal">
+                <div className="absolute right-0 top-10 mt-2 w-48 bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg flex flex-col p-2 gap-1 z-50 animate-modal">
                   <button onClick={() => {setActiveModal('ai'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Elo AI</button>
                   <button onClick={() => {setActiveModal('planos'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Pro</button>
                   <button onClick={() => {setActiveModal('settings'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Definições</button>
-                  {(user.uid === ADMIN_UID || userProfile?.role === 'Admin') && (
+                  {user.uid === ADMIN_UID && (
                     <button onClick={() => {setActiveModal('admin'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Admin</button>
                   )}
                   <button onClick={() => {handleLogout(); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 text-red-500 ${btnFocus}`}>Sair</button>
@@ -706,7 +833,7 @@ function MainApp() {
           </div>
         </header>
 
-        <main className="max-w-5xl mx-auto px-4 py-10 flex-1 w-full" onClick={() => isMobileMenuOpen && setIsMobileMenuOpen(false)}>
+        <main className="max-w-5xl mx-auto px-4 py-10 flex-1 w-full" onClick={() => { isMobileMenuOpen && setIsMobileMenuOpen(false); isCreateMenuOpen && setIsCreateMenuOpen(false); }}>
           {currentTab === 'feed' && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
               <div className="md:col-span-2 space-y-8">
@@ -714,8 +841,9 @@ function MainApp() {
                   onClick={() => setActiveModal('createPost')}
                   className={`w-full flex items-center gap-4 border border-gray-200 dark:border-gray-800 p-4 rounded-2xl cursor-pointer hover:border-black dark:hover:border-white transition-colors text-left ${btnFocus}`}
                 >
-                  <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center shrink-0 overflow-hidden">
-                    {userProfile?.avatarUrl ? <img src={userProfile.avatarUrl} alt="" className="w-full h-full object-cover" /> : <UserIcon size={20} className="text-gray-400" />}
+                  <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center shrink-0 overflow-hidden relative">
+                    <span className="absolute">{userProfile?.name?.charAt(0) || 'U'}</span>
+                    {userProfile?.avatarUrl && <img src={userProfile.avatarUrl} alt="" className="w-full h-full object-cover relative z-10" onError={handleImageError} />}
                   </div>
                   <div className="text-sm text-gray-400">Criar uma publicação...</div>
                 </button>
@@ -737,8 +865,9 @@ function MainApp() {
                       <article key={post.id} className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6">
                         <div className="flex items-center justify-between mb-4">
                           <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0 overflow-hidden">
-                              {post.authorAvatar ? <img src={post.authorAvatar} alt="" className="w-full h-full object-cover" /> : post.authorName.charAt(0)}
+                            <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0 overflow-hidden relative">
+                              <span className="absolute">{post.authorName.charAt(0)}</span>
+                              {post.authorAvatar && <img src={post.authorAvatar} alt="" className="w-full h-full object-cover relative z-10" onError={handleImageError} />}
                             </div>
                             <div>
                               <p className="text-sm font-semibold">{post.authorName}</p>
@@ -749,7 +878,7 @@ function MainApp() {
                         </div>
 
                         <p className="text-sm leading-relaxed mb-4 whitespace-pre-wrap">{post.content}</p>
-                        {post.imageUrl && <img src={post.imageUrl} alt="" className="rounded-xl w-full max-h-96 object-cover border border-gray-100 dark:border-gray-900 mb-4" />}
+                        {post.imageUrl && <img src={post.imageUrl} alt="" className="rounded-xl w-full max-h-96 object-cover border border-gray-100 dark:border-gray-900 mb-4" onError={handleImageError} />}
 
                         <div className="flex items-center gap-8 text-xs text-gray-500 pt-4 mt-2 border-t border-gray-100 dark:border-gray-900">
                           <button onClick={() => toggleLike(post.id, post.likes)} className={`flex items-center gap-2 hover:text-black dark:hover:text-white transition-colors ${post.likes.includes(user.uid) ? 'font-bold text-black dark:text-white' : ''} ${btnFocus}`}>
@@ -792,6 +921,26 @@ function MainApp() {
               </div>
 
               <div className="space-y-8">
+                {events.length > 0 && (
+                  <div className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6 space-y-4">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2"><Calendar size={14}/> Próximos Eventos</h3>
+                    <div className="space-y-5">
+                      {events.map(ev => (
+                        <div key={ev.id} className="border-b border-gray-100 dark:border-gray-900 pb-4 last:border-0 last:pb-0 space-y-2">
+                          <h4 className="font-semibold text-sm leading-tight">{ev.title}</h4>
+                          <div className="text-xs text-gray-500 space-y-1">
+                            <p>{ev.date} às {ev.time}</p>
+                            <p className="flex items-center gap-1"><MapPin size={12}/> {ev.location}</p>
+                          </div>
+                          <button onClick={() => toggleEventRSVP(ev.id, ev.attendees)} className={`w-full mt-2 py-1.5 rounded-lg text-xs font-medium transition-colors ${ev.attendees.includes(user.uid) ? 'bg-gray-100 dark:bg-gray-800 text-black dark:text-white' : 'bg-black text-white dark:bg-white dark:text-black'} ${btnFocus}`}>
+                            {ev.attendees.includes(user.uid) ? 'Inscrito ✓' : 'Inscrever-me'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6 space-y-4">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Radar de Mercado</h3>
                   {rssLoading && <p className="text-xs text-gray-400">A carregar notícias...</p>}
@@ -839,8 +988,9 @@ function MainApp() {
                   {networkUsers.filter(u => u.name.toLowerCase().includes(searchTerm.toLowerCase()) || u.role.toLowerCase().includes(searchTerm.toLowerCase()) || u.location.toLowerCase().includes(searchTerm.toLowerCase())).map(netUser => (
                     <div key={netUser.uid} className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6 flex flex-col justify-between space-y-4">
                       <div className="flex items-start gap-4">
-                        <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0 overflow-hidden">
-                          {netUser.avatarUrl ? <img src={netUser.avatarUrl} alt="" className="w-full h-full object-cover" /> : netUser.name.charAt(0)}
+                        <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0 overflow-hidden relative">
+                          <span className="absolute">{netUser.name.charAt(0)}</span>
+                          {netUser.avatarUrl && <img src={netUser.avatarUrl} alt="" className="w-full h-full object-cover relative z-10" onError={handleImageError} />}
                         </div>
                         <div className="space-y-1 text-sm">
                           <h4 className="font-semibold">{netUser.name}</h4>
@@ -889,42 +1039,52 @@ function MainApp() {
             <div className="max-w-3xl mx-auto space-y-8">
               <div className="border border-gray-200 dark:border-gray-800 rounded-2xl overflow-hidden">
                 <div className="h-48 bg-gray-100 dark:bg-gray-900 relative">
-                  {activeProfile.coverUrl && <img src={activeProfile.coverUrl} alt="" className="w-full h-full object-cover" />}
+                  {activeProfile.coverUrl && <img src={activeProfile.coverUrl} alt="" className="w-full h-full object-cover" onError={handleImageError} />}
                 </div>
                 <div className="p-8 relative pt-0">
-                  <div className="w-24 h-24 bg-gray-100 dark:bg-gray-900 rounded-full border-4 border-white dark:border-black flex items-center justify-center font-bold text-2xl uppercase -mt-12 mb-6 shrink-0 overflow-hidden">
-                    {activeProfile.avatarUrl ? <img src={activeProfile.avatarUrl} alt="" className="w-full h-full object-cover" /> : activeProfile.name.charAt(0)}
+                  <div className="w-24 h-24 bg-gray-100 dark:bg-gray-900 rounded-full border-4 border-white dark:border-black flex items-center justify-center font-bold text-2xl uppercase -mt-12 mb-4 shrink-0 overflow-hidden relative">
+                    <span className="absolute">{activeProfile.name.charAt(0)}</span>
+                    {activeProfile.avatarUrl && <img src={activeProfile.avatarUrl} alt="" className="w-full h-full object-cover relative z-10" onError={handleImageError} />}
                   </div>
-                  <div className="flex flex-col md:flex-row md:justify-between items-start mb-8 gap-4">
+                  <div className="flex flex-col md:flex-row md:justify-between items-start mb-6 gap-4">
                     <div className="space-y-1">
                       <h2 className="text-2xl font-bold">{activeProfile.name}</h2>
                       <p className="text-sm text-gray-500">{activeProfile.role} • {activeProfile.location}</p>
+                      <p className="text-xs text-gray-400 pt-1">
+                        {activeProfilePostCount !== null ? `${activeProfilePostCount} Publicaç${activeProfilePostCount === 1 ? 'ão' : 'ões'} • ` : ''} 
+                        Membro desde {parseDate(activeProfile.createdAt)}
+                      </p>
                     </div>
                     {!viewingProfileUid || viewingProfileUid === user.uid ? (
                       <button onClick={() => { setSettingsTab('perfil'); setActiveModal('settings'); }} className={`text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>Editar Perfil</button>
                     ) : (
                       <div className="flex gap-3 w-full md:w-auto">
-                        <button onClick={() => showToast(`Reunião com ${activeProfile.name} solicitada.`)} className={`flex-1 md:flex-none text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl font-medium ${btnFocus}`}>Reunião</button>
+                        <button onClick={() => { setMeetingData({ targetUid: activeProfile.uid, date: '', time: '', message: '' }); setActiveModal('createMeeting'); }} className={`flex-1 md:flex-none text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl font-medium ${btnFocus}`}>Reunião</button>
                         <button onClick={() => toggleFollow(activeProfile.uid)} className={`flex-1 md:flex-none text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl ${btnFocus}`}>{followingUids.includes(activeProfile.uid) ? 'A seguir' : 'Seguir'}</button>
                       </div>
                     )}
                   </div>
-                  <div className="space-y-6 text-sm">
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 text-sm pt-4 border-t border-gray-100 dark:border-gray-900">
                     <div>
                       <h4 className="font-bold uppercase text-gray-400 text-[10px] tracking-wider mb-2">Pitch / Sobre</h4>
-                      <p className="leading-relaxed">{activeProfile.pitch}</p>
+                      <p className="leading-relaxed whitespace-pre-wrap">{activeProfile.pitch}</p>
                     </div>
-                    {activeProfile.lookingFor && (
-                      <div>
-                        <h4 className="font-bold uppercase text-gray-400 text-[10px] tracking-wider mb-2">O que procura</h4>
-                        <p className="leading-relaxed">{activeProfile.lookingFor}</p>
-                      </div>
-                    )}
-                    {activeProfile.linkedinUrl && (
-                      <div>
-                        <a href={activeProfile.linkedinUrl} target="_blank" rel="noopener noreferrer" className={`text-gray-500 hover:text-black dark:hover:text-white underline rounded-sm ${btnFocus}`}>LinkedIn Profile</a>
-                      </div>
-                    )}
+                    <div className="space-y-6">
+                      {activeProfile.lookingFor && (
+                        <div>
+                          <h4 className="font-bold uppercase text-gray-400 text-[10px] tracking-wider mb-2">O que procura</h4>
+                          <p className="leading-relaxed whitespace-pre-wrap">{activeProfile.lookingFor}</p>
+                        </div>
+                      )}
+                      {activeProfile.linkedinUrl && (
+                        <div>
+                          <a href={activeProfile.linkedinUrl} target="_blank" rel="noopener noreferrer" className={`inline-flex items-center gap-2 bg-gray-100 dark:bg-gray-900 px-4 py-2 rounded-full text-xs font-medium hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors ${btnFocus}`}>
+                            <Linkedin size={14} /> LinkedIn
+                          </a>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -933,10 +1093,10 @@ function MainApp() {
         </main>
 
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-black border-t border-gray-200 dark:border-gray-800 flex justify-around py-3 text-xs z-40">
-          <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} className={`${currentTab === 'feed' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Feed</button>
-          <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} className={`${currentTab === 'rede' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Rede</button>
-          <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} className={`${currentTab === 'notificacoes' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Notificações</button>
-          <button onClick={() => { setCurrentTab('perfil'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} className={`${currentTab === 'perfil' && !viewingProfileUid ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Perfil</button>
+          <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'feed' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Feed</button>
+          <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'rede' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Rede</button>
+          <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'notificacoes' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Notificações</button>
+          <button onClick={() => { setCurrentTab('perfil'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'perfil' && !viewingProfileUid ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Perfil</button>
         </nav>
 
         {activeModal === 'createPost' && (
@@ -964,110 +1124,207 @@ function MainApp() {
           </div>
         )}
 
+        {activeModal === 'createMeeting' && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-lg w-full space-y-4 animate-modal">
+              <h3 className="text-base font-semibold">Agendar Reunião</h3>
+              <form onSubmit={handleCreateMeeting} className="space-y-4 text-sm">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-gray-500">Com quem?</label>
+                  <select required value={meetingData.targetUid} onChange={e => setMeetingData({...meetingData, targetUid: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white">
+                    <option value="" disabled className="text-gray-400 dark:bg-black">Seleciona um membro da rede</option>
+                    {networkUsers.map(u => <option key={u.uid} value={u.uid} className="dark:bg-black">{u.name} ({u.role})</option>)}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-gray-500">Data</label>
+                    <input type="date" required value={meetingData.date} onChange={e => setMeetingData({...meetingData, date: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-gray-500">Hora</label>
+                    <input type="time" required value={meetingData.time} onChange={e => setMeetingData({...meetingData, time: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-gray-500">Mensagem Curta</label>
+                  <textarea maxLength={200} placeholder="Propósito da reunião..." value={meetingData.message} onChange={e => setMeetingData({...meetingData, message: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl h-20 focus:outline-none focus:border-black dark:focus:border-white" />
+                </div>
+                <div className="flex justify-end gap-3 pt-2">
+                  <button type="button" onClick={() => setActiveModal('none')} className={`px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs ${btnFocus}`}>Cancelar</button>
+                  <button type="submit" className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Agendar</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {activeModal === 'createEvent' && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-lg w-full space-y-4 animate-modal">
+              <h3 className="text-base font-semibold">Criar Novo Evento (Admin)</h3>
+              <form onSubmit={handleCreateEvent} className="space-y-4 text-sm">
+                <input type="text" required placeholder="Título do Evento" value={eventData.title} onChange={e => setEventData({...eventData, title: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                <textarea required placeholder="Descrição" value={eventData.description} onChange={e => setEventData({...eventData, description: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl h-20 focus:outline-none focus:border-black dark:focus:border-white" />
+                <div className="grid grid-cols-2 gap-4">
+                  <input type="date" required value={eventData.date} onChange={e => setEventData({...eventData, date: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                  <input type="time" required value={eventData.time} onChange={e => setEventData({...eventData, time: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <input type="text" required placeholder="Local ou Link" value={eventData.location} onChange={e => setEventData({...eventData, location: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                  <input type="number" placeholder="Capacidade (opcional)" value={eventData.capacity} onChange={e => setEventData({...eventData, capacity: e.target.value})} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                </div>
+                <div className="flex justify-end gap-3 pt-2">
+                  <button type="button" onClick={() => setActiveModal('none')} className={`px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs ${btnFocus}`}>Cancelar</button>
+                  <button type="submit" className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Criar Evento</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
         {activeModal === 'settings' && editFormData && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-8 max-w-2xl w-full space-y-6 max-h-[90vh] overflow-y-auto animate-modal">
-              <div className="flex justify-between items-center pb-2">
-                <h3 className="text-lg font-semibold">Definições</h3>
-                <button onClick={() => setActiveModal('none')} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white ${btnFocus} p-1`}>Fechar</button>
+            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-0 w-full max-w-3xl flex flex-col md:flex-row max-h-[90vh] animate-modal overflow-hidden">
+              
+              <div className="md:w-48 bg-gray-50 dark:bg-gray-900 border-b md:border-b-0 md:border-r border-gray-200 dark:border-gray-800 p-4 shrink-0 overflow-x-auto md:overflow-y-auto">
+                <div className="flex justify-between items-center mb-6 hidden md:flex">
+                  <h3 className="text-lg font-semibold">Definições</h3>
+                </div>
+                <div className="flex md:flex-col gap-2 min-w-max md:min-w-0">
+                  <button onClick={() => setSettingsTab('aparencia')} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${settingsTab === 'aparencia' ? 'bg-white dark:bg-black shadow-sm font-semibold' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} ${btnFocus}`}>
+                    <Palette size={16}/> Aparência
+                  </button>
+                  <button onClick={() => setSettingsTab('conta')} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${settingsTab === 'conta' ? 'bg-white dark:bg-black shadow-sm font-semibold' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} ${btnFocus}`}>
+                    <UserIcon size={16}/> Conta
+                  </button>
+                  <button onClick={() => setSettingsTab('privacidade')} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${settingsTab === 'privacidade' ? 'bg-white dark:bg-black shadow-sm font-semibold' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} ${btnFocus}`}>
+                    <Shield size={16}/> Privacidade
+                  </button>
+                  <button onClick={() => setSettingsTab('notificacoes')} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${settingsTab === 'notificacoes' ? 'bg-white dark:bg-black shadow-sm font-semibold' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} ${btnFocus}`}>
+                    <Bell size={16}/> Notificações
+                  </button>
+                  <button onClick={() => setSettingsTab('perfil')} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${settingsTab === 'perfil' ? 'bg-white dark:bg-black shadow-sm font-semibold' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} ${btnFocus}`}>
+                    <Pencil size={16}/> Editar Perfil
+                  </button>
+                </div>
               </div>
 
-              <div className="flex gap-6 border-b border-gray-100 dark:border-gray-900 text-sm overflow-x-auto pb-1">
-                <button onClick={() => setSettingsTab('aparencia')} className={`${settingsTab === 'aparencia' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Aparência</button>
-                <button onClick={() => setSettingsTab('conta')} className={`${settingsTab === 'conta' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Conta</button>
-                <button onClick={() => setSettingsTab('privacidade')} className={`${settingsTab === 'privacidade' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Privacidade</button>
-                <button onClick={() => setSettingsTab('notificacoes')} className={`${settingsTab === 'notificacoes' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Notificações</button>
-                <button onClick={() => setSettingsTab('perfil')} className={`${settingsTab === 'perfil' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Editar Perfil</button>
+              <div className="flex-1 p-6 md:p-8 overflow-y-auto">
+                <div className="flex justify-between items-center mb-6 md:hidden">
+                  <h3 className="text-lg font-semibold">Definições</h3>
+                  <button onClick={() => setActiveModal('none')} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white ${btnFocus} p-1`}>Fechar</button>
+                </div>
+                <div className="hidden md:flex justify-end mb-4 -mt-4 -mr-4">
+                  <button onClick={() => setActiveModal('none')} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white ${btnFocus} p-2`}><X size={20}/></button>
+                </div>
+
+                {settingsTab === 'aparencia' && (
+                  <div className="flex items-center justify-between text-sm py-4">
+                    <span>Modo Escuro</span>
+                    <button onClick={() => setIsDarkMode(!isDarkMode)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{isDarkMode ? 'Ativo' : 'Inativo'}</button>
+                  </div>
+                )}
+
+                {settingsTab === 'conta' && (
+                  <div className="space-y-6 text-sm py-2">
+                    {accountSettingsMsg && <p className="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">{accountSettingsMsg}</p>}
+                    <div className="space-y-3">
+                      <p className="font-semibold">Alterar Email</p>
+                      <input type="email" placeholder="Novo email" value={newEmail} onChange={e => setNewEmail(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                      <button onClick={handleUpdateEmail} className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Atualizar Email</button>
+                    </div>
+                    <div className="space-y-3 pt-6 border-t border-gray-100 dark:border-gray-900">
+                      <p className="font-semibold">Alterar Palavra-passe</p>
+                      <input type="password" placeholder="Nova palavra-passe" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
+                      <button onClick={handleUpdatePassword} className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Atualizar Palavra-passe</button>
+                    </div>
+                    <div className="pt-6 border-t border-gray-100 dark:border-gray-900">
+                      <button onClick={handleDeleteAccount} className={`text-red-500 font-medium hover:underline text-xs ${btnFocus} rounded-sm`}>Eliminar Conta Definitivamente</button>
+                    </div>
+                  </div>
+                )}
+
+                {settingsTab === 'privacidade' && (
+                  <div className="space-y-6 text-sm py-2">
+                    <div className="flex items-center justify-between">
+                      <span>Perfil visível na Rede</span>
+                      <button onClick={() => handlePrivacyToggle('visibleInNetwork', !visibleInNetwork)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{visibleInNetwork ? 'Sim' : 'Não'}</button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Aceitar pedidos de reunião</span>
+                      <button onClick={() => handlePrivacyToggle('acceptsMeetings', !acceptsMeetings)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{acceptsMeetings ? 'Sim' : 'Não'}</button>
+                    </div>
+                  </div>
+                )}
+
+                {settingsTab === 'notificacoes' && (
+                  <div className="space-y-6 text-sm py-2">
+                    <div className="flex items-center justify-between">
+                      <span>Notificar em novos seguidores</span>
+                      <button onClick={() => { const v = !notifFollowers; setNotifFollowers(v); localStorage.setItem('elo_notif_followers', String(v)); }} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{notifFollowers ? 'Sim' : 'Não'}</button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Notificar em pedidos de reunião</span>
+                      <button onClick={() => { const v = !notifMeetings; setNotifMeetings(v); localStorage.setItem('elo_notif_meetings', String(v)); }} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{notifMeetings ? 'Sim' : 'Não'}</button>
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-4 italic">Nota: As notificações por email ainda não estão ativas na plataforma.</p>
+                  </div>
+                )}
+
+                {settingsTab === 'perfil' && (
+                  <form onSubmit={handleUpdateProfile} className="space-y-8 text-sm">
+                    
+                    <div className="space-y-4 relative">
+                      <div className="h-32 bg-gray-100 dark:bg-gray-800 rounded-xl relative group overflow-hidden border border-gray-200 dark:border-gray-700">
+                        {editFormData.coverUrl && <img src={editFormData.coverUrl} className="w-full h-full object-cover" alt="Cover" />}
+                        <label className="absolute inset-0 bg-black/40 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
+                          <span className="text-xs font-semibold flex items-center gap-2"><Camera size={16}/> Alterar capa</span>
+                          <input type="file" accept="image/*" onChange={e => handleFileChange(e, 'coverUrl')} className="hidden" />
+                        </label>
+                      </div>
+                      <div className="w-20 h-20 bg-gray-200 dark:bg-gray-700 rounded-full border-4 border-white dark:border-black absolute -bottom-6 left-6 flex items-center justify-center font-bold text-xl uppercase overflow-hidden relative group">
+                        <span className="absolute z-0">{editFormData.name.charAt(0)}</span>
+                        {editFormData.avatarUrl && <img src={editFormData.avatarUrl} className="w-full h-full object-cover relative z-10" alt="Avatar" />}
+                        <label className="absolute inset-0 bg-black/40 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer z-20">
+                          <Camera size={20} />
+                          <input type="file" accept="image/*" onChange={e => handleFileChange(e, 'avatarUrl')} className="hidden" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="pt-6 space-y-4">
+                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 pb-1 border-b border-gray-100 dark:border-gray-900">Informação Básica</h4>
+                      <input type="text" placeholder="Nome" value={editFormData.name} onChange={e => setEditFormData({ ...editFormData, name: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <input type="text" placeholder="Cargo" value={editFormData.role} onChange={e => setEditFormData({ ...editFormData, role: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                        <input type="text" placeholder="Localização" value={editFormData.location} onChange={e => setEditFormData({ ...editFormData, location: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 pb-1 border-b border-gray-100 dark:border-gray-900">Sobre Ti</h4>
+                      <div>
+                        <textarea maxLength={300} placeholder="O teu Pitch curto" value={editFormData.pitch} onChange={e => setEditFormData({ ...editFormData, pitch: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                        <div className="text-right text-[10px] text-gray-400">{editFormData.pitch.length}/300</div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 pb-1 border-b border-gray-100 dark:border-gray-900">Objetivos</h4>
+                      <div>
+                        <textarea maxLength={300} placeholder="O que procuras no Elo?" value={editFormData.lookingFor || ''} onChange={e => setEditFormData({ ...editFormData, lookingFor: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                        <div className="text-right text-[10px] text-gray-400">{(editFormData.lookingFor || '').length}/300</div>
+                      </div>
+                      <input type="url" placeholder="URL do LinkedIn" value={editFormData.linkedinUrl || ''} onChange={e => setEditFormData({ ...editFormData, linkedinUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                    </div>
+                    
+                    <div className="pt-2">
+                      <button type="submit" className={`w-full py-3 bg-black text-white dark:bg-white dark:text-black rounded-xl font-medium ${btnFocus}`}>Guardar Alterações</button>
+                    </div>
+                  </form>
+                )}
               </div>
-
-              {settingsTab === 'aparencia' && (
-                <div className="flex items-center justify-between text-sm py-4">
-                  <span>Modo Escuro</span>
-                  <button onClick={() => setIsDarkMode(!isDarkMode)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{isDarkMode ? 'Ativo' : 'Inativo'}</button>
-                </div>
-              )}
-
-              {settingsTab === 'conta' && (
-                <div className="space-y-6 text-sm py-2">
-                  {accountSettingsMsg && <p className="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">{accountSettingsMsg}</p>}
-                  <div className="space-y-3">
-                    <p className="font-semibold">Alterar Email</p>
-                    <input type="email" placeholder="Novo email" value={newEmail} onChange={e => setNewEmail(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
-                    <button onClick={handleUpdateEmail} className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Atualizar Email</button>
-                  </div>
-                  <div className="space-y-3 pt-6 border-t border-gray-100 dark:border-gray-900">
-                    <p className="font-semibold">Alterar Palavra-passe</p>
-                    <input type="password" placeholder="Nova palavra-passe" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
-                    <button onClick={handleUpdatePassword} className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Atualizar Palavra-passe</button>
-                  </div>
-                  <div className="pt-6 border-t border-gray-100 dark:border-gray-900">
-                    <button onClick={handleDeleteAccount} className={`text-red-500 font-medium hover:underline text-xs ${btnFocus} rounded-sm`}>Eliminar Conta Definitivamente</button>
-                  </div>
-                </div>
-              )}
-
-              {settingsTab === 'privacidade' && (
-                <div className="space-y-6 text-sm py-2">
-                  <div className="flex items-center justify-between">
-                    <span>Perfil visível na Rede</span>
-                    <button onClick={() => handlePrivacyToggle('visibleInNetwork', !visibleInNetwork)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{visibleInNetwork ? 'Sim' : 'Não'}</button>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Aceitar pedidos de reunião</span>
-                    <button onClick={() => handlePrivacyToggle('acceptsMeetings', !acceptsMeetings)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{acceptsMeetings ? 'Sim' : 'Não'}</button>
-                  </div>
-                </div>
-              )}
-
-              {settingsTab === 'notificacoes' && (
-                <div className="space-y-6 text-sm py-2">
-                  <div className="flex items-center justify-between">
-                    <span>Notificar em novos seguidores</span>
-                    <button onClick={() => { const v = !notifFollowers; setNotifFollowers(v); localStorage.setItem('elo_notif_followers', String(v)); }} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{notifFollowers ? 'Sim' : 'Não'}</button>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Notificar em pedidos de reunião</span>
-                    <button onClick={() => { const v = !notifMeetings; setNotifMeetings(v); localStorage.setItem('elo_notif_meetings', String(v)); }} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{notifMeetings ? 'Sim' : 'Não'}</button>
-                  </div>
-                  <p className="text-[10px] text-gray-400 mt-4 italic">Nota: As notificações por email ainda não estão ativas na plataforma.</p>
-                </div>
-              )}
-
-              {settingsTab === 'perfil' && (
-                <form onSubmit={handleUpdateProfile} className="space-y-4 text-sm py-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pb-2 border-b border-gray-100 dark:border-gray-900">
-                    <div className="space-y-2">
-                      <label className="text-xs font-semibold text-gray-500">Foto de Perfil (Avatar)</label>
-                      <input type="file" accept="image/*" onChange={e => handleFileChange(e, 'avatarUrl')} className="w-full text-xs" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-xs font-semibold text-gray-500">Capa de Perfil</label>
-                      <input type="file" accept="image/*" onChange={e => handleFileChange(e, 'coverUrl')} className="w-full text-xs" />
-                    </div>
-                  </div>
-                  
-                  <input type="text" placeholder="Nome" value={editFormData.name} onChange={e => setEditFormData({ ...editFormData, name: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <input type="text" placeholder="Cargo" value={editFormData.role} onChange={e => setEditFormData({ ...editFormData, role: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                    <input type="text" placeholder="Localização" value={editFormData.location} onChange={e => setEditFormData({ ...editFormData, location: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                  </div>
-                  <input type="url" placeholder="URL do LinkedIn" value={editFormData.linkedinUrl || ''} onChange={e => setEditFormData({ ...editFormData, linkedinUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                  
-                  <div>
-                    <textarea maxLength={300} placeholder="O teu Pitch curto" value={editFormData.pitch} onChange={e => setEditFormData({ ...editFormData, pitch: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
-                    <div className="text-right text-[10px] text-gray-400">{editFormData.pitch.length}/300</div>
-                  </div>
-                  
-                  <div>
-                    <textarea maxLength={300} placeholder="O que procuras no Elo?" value={editFormData.lookingFor || ''} onChange={e => setEditFormData({ ...editFormData, lookingFor: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
-                    <div className="text-right text-[10px] text-gray-400">{(editFormData.lookingFor || '').length}/300</div>
-                  </div>
-                  
-                  <div className="pt-2">
-                    <button type="submit" className={`w-full py-3 bg-black text-white dark:bg-white dark:text-black rounded-xl font-medium ${btnFocus}`}>Guardar Alterações</button>
-                  </div>
-                </form>
-              )}
             </div>
           </div>
         )}
