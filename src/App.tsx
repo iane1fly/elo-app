@@ -31,7 +31,7 @@ import {
   arrayUnion,
   arrayRemove
 } from 'firebase/firestore';
-import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon } from 'lucide-react';
+import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon, Menu, X, Inbox, Users, Bell } from 'lucide-react';
 import logo from './logo.png';
 
 const ADMIN_UID = 'eExYyC3FRsOkSIbzy1tENc41nDm2';
@@ -91,7 +91,6 @@ interface NotificationItem {
   read: boolean;
 }
 
-// 4. GLOBAL ERROR BOUNDARY
 class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean}> {
   constructor(props: {children: React.ReactNode}) {
     super(props);
@@ -113,7 +112,7 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
           <h1 className="text-xl font-bold mb-4">Algo correu mal.</h1>
           <button 
             onClick={() => window.location.reload()} 
-            className="px-4 py-2 bg-black text-white dark:bg-white dark:text-black rounded-lg text-sm font-medium"
+            className="px-4 py-2 bg-black text-white dark:bg-white dark:text-black rounded-lg text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-black dark:focus-visible:ring-white"
           >
             Recarrega a página
           </button>
@@ -129,13 +128,12 @@ function MainApp() {
   const [loading, setLoading] = useState(true);
   const [accessStatus, setAccessStatus] = useState<AccessStatus>('none');
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  
-  // 1. ESTADO ISOLADO PARA EDIÇÃO DE PERFIL
   const [editFormData, setEditFormData] = useState<UserProfile | null>(null);
 
   const [currentTab, setCurrentTab] = useState<'feed' | 'rede' | 'notificacoes' | 'perfil'>('feed');
   const [activeModal, setActiveModal] = useState<'none' | 'settings' | 'planos' | 'ai' | 'admin' | 'createPost'>('none');
   const [viewingProfileUid, setViewingProfileUid] = useState<string | null>(null);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => localStorage.getItem('elo_theme') === 'dark');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -150,6 +148,7 @@ function MainApp() {
     name: '', location: '', role: '', company: '', pitch: '', lookingFor: ''
   });
 
+  const [fetchingPosts, setFetchingPosts] = useState(true);
   const [posts, setPosts] = useState<Post[]>([]);
   const [newPostText, setNewPostText] = useState('');
   const [newPostImage, setNewPostImage] = useState<string | null>(null);
@@ -160,6 +159,7 @@ function MainApp() {
   const [rssLoading, setRssLoading] = useState(true);
   const [rssError, setRssError] = useState(false);
 
+  const [fetchingNetwork, setFetchingNetwork] = useState(true);
   const [networkUsers, setNetworkUsers] = useState<UserProfile[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [followingUids, setFollowingUids] = useState<string[]>([]);
@@ -187,12 +187,31 @@ function MainApp() {
   const [pendingRequests, setPendingRequests] = useState<UserProfile[]>([]);
   const [approvedMembers, setApprovedMembers] = useState<UserProfile[]>([]);
 
+  const btnFocus = "focus:outline-none focus-visible:ring-2 focus-visible:ring-black dark:focus-visible:ring-white focus-visible:ring-offset-2 dark:focus-visible:ring-offset-black";
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Auth Listener
+  useEffect(() => {
+    document.title = "Elo — Rede de Fundadores";
+    let metaDesc = document.querySelector('meta[name="description"]');
+    if (!metaDesc) {
+      metaDesc = document.createElement('meta');
+      metaDesc.setAttribute('name', 'description');
+      document.head.appendChild(metaDesc);
+    }
+    metaDesc.setAttribute('content', 'A rede exclusiva para fundadores e investidores em Portugal.');
+    let linkIcon = document.querySelector('link[rel="icon"]');
+    if (!linkIcon) {
+      linkIcon = document.createElement('link');
+      linkIcon.setAttribute('rel', 'icon');
+      document.head.appendChild(linkIcon);
+    }
+    linkIcon.setAttribute('href', logo);
+  }, []);
+
   useEffect(() => {
     let unsubscribeSnapshot: () => void;
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
@@ -223,7 +242,6 @@ function MainApp() {
     return () => { unsubscribeAuth(); if (unsubscribeSnapshot) unsubscribeSnapshot(); };
   }, []);
 
-  // Theme Sync
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
@@ -234,12 +252,12 @@ function MainApp() {
     }
   }, [isDarkMode]);
 
-  // Feed & RSS
   useEffect(() => {
     if (accessStatus === 'approved') {
       const qPosts = query(collection(db, 'posts'), orderBy('createdAt', 'desc'));
       const unsubPosts = onSnapshot(qPosts, snap => {
         setPosts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Post)));
+        setFetchingPosts(false);
       });
 
       setRssLoading(true);
@@ -258,7 +276,6 @@ function MainApp() {
     }
   }, [accessStatus]);
 
-  // 3. REAL-TIME NETWORK LIST (onSnapshot insted of getDocs)
   useEffect(() => {
     if (accessStatus === 'approved') {
       const q = query(collection(db, 'accessRequests'), where('status', '==', 'approved'));
@@ -269,12 +286,12 @@ function MainApp() {
           if (u.uid !== user?.uid && u.visibleInNetwork !== false) users.push(u);
         });
         setNetworkUsers(users);
+        setFetchingNetwork(false);
       });
       return () => unsubNetwork();
     }
   }, [accessStatus, user]);
 
-  // Admin Setup
   useEffect(() => {
     if (activeModal === 'admin' && (user?.uid === ADMIN_UID || userProfile?.role === 'Admin')) {
       const qPending = query(collection(db, 'accessRequests'), where('status', '==', 'pending'));
@@ -284,15 +301,12 @@ function MainApp() {
     }
   }, [activeModal, user, userProfile]);
 
-  // 1. ISOLATE EDIT FORM DATA ON MODAL OPEN
   useEffect(() => {
     if (activeModal === 'settings' && settingsTab === 'perfil' && userProfile) {
       setEditFormData({ ...userProfile });
     }
   }, [activeModal, settingsTab, userProfile]);
 
-
-  // Auth Handlers
   const handleGoogleLogin = async () => {
     setAuthError('');
     try { await signInWithPopup(auth, new GoogleAuthProvider()); } 
@@ -328,7 +342,6 @@ function MainApp() {
     } catch (err: any) { setAuthError('Erro ao submeter perfil.'); }
   };
 
-  // Post Actions
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPostText.trim() || !user) return;
@@ -354,7 +367,6 @@ function MainApp() {
     }
   };
 
-  // 2. IMAGE COMPRESSION HANDLERS
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -455,7 +467,6 @@ function MainApp() {
     }
   };
 
-  // 1. UPDATE PROFILE FROM EDIT FORMDATA ONLY
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user || !editFormData) return;
@@ -538,12 +549,14 @@ function MainApp() {
   };
 
   const handleAdminReject = async (targetUid: string) => {
+    if (!window.confirm('Tem a certeza que pretende rejeitar esta candidatura?')) return;
     await updateDoc(doc(db, 'accessRequests', targetUid), { status: 'rejected' });
     setPendingRequests(pendingRequests.filter(u => u.uid !== targetUid));
     showToast('Acesso rejeitado.');
   };
 
   const handleAdminRevoke = async (targetUid: string) => {
+    if (!window.confirm('Tem a certeza que pretende revogar o acesso a este membro?')) return;
     await updateDoc(doc(db, 'accessRequests', targetUid), { status: 'rejected' });
     setApprovedMembers(approvedMembers.filter(u => u.uid !== targetUid));
     showToast('Acesso revogado.');
@@ -567,7 +580,7 @@ function MainApp() {
             <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
               O teu perfil encontra-se sob revisão. Analisamos todas as candidaturas individualmente.
             </p>
-            <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-black dark:hover:text-white underline">Sair da conta</button>
+            <button onClick={handleLogout} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white underline ${btnFocus}`}>Sair da conta</button>
           </div>
         </div>
       );
@@ -582,7 +595,7 @@ function MainApp() {
             <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
               De momento, não nos é possível aprovar o teu acesso ao Elo.
             </p>
-            <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-black dark:hover:text-white underline">Sair da conta</button>
+            <button onClick={handleLogout} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white underline ${btnFocus}`}>Sair da conta</button>
           </div>
         </div>
       );
@@ -612,15 +625,21 @@ function MainApp() {
                 <>
                   <input type="text" placeholder="Cargo / Função" value={onboardingData.role} onChange={e => setOnboardingData({ ...onboardingData, role: e.target.value })} required className="w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
                   <input type="text" placeholder="Empresa / Projeto" value={onboardingData.company} onChange={e => setOnboardingData({ ...onboardingData, company: e.target.value })} required className="w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
-                  <textarea placeholder="O teu Pitch curto" value={onboardingData.pitch} onChange={e => setOnboardingData({ ...onboardingData, pitch: e.target.value })} required className="w-full border border-gray-300 dark:border-gray-800 bg-transparent p-3 rounded-lg text-sm h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <div>
+                    <textarea maxLength={300} placeholder="O teu Pitch curto" value={onboardingData.pitch} onChange={e => setOnboardingData({ ...onboardingData, pitch: e.target.value })} required className="w-full border border-gray-300 dark:border-gray-800 bg-transparent p-3 rounded-lg text-sm h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                    <div className="text-right text-[10px] text-gray-400">{onboardingData.pitch.length}/300</div>
+                  </div>
                 </>
               )}
               {onboardingStep === 3 && (
-                <textarea placeholder="O que procuras no Elo?" value={onboardingData.lookingFor} onChange={e => setOnboardingData({ ...onboardingData, lookingFor: e.target.value })} required className="w-full border border-gray-300 dark:border-gray-800 bg-transparent p-3 rounded-lg text-sm h-32 focus:outline-none focus:border-black dark:focus:border-white" />
+                <div>
+                  <textarea maxLength={300} placeholder="O que procuras no Elo?" value={onboardingData.lookingFor} onChange={e => setOnboardingData({ ...onboardingData, lookingFor: e.target.value })} required className="w-full border border-gray-300 dark:border-gray-800 bg-transparent p-3 rounded-lg text-sm h-32 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <div className="text-right text-[10px] text-gray-400">{onboardingData.lookingFor.length}/300</div>
+                </div>
               )}
               <div className="flex justify-between gap-4 pt-4">
-                {onboardingStep > 1 && <button type="button" onClick={() => setOnboardingStep(onboardingStep - 1)} className="w-1/2 py-3 border border-gray-300 dark:border-gray-800 rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-900">Voltar</button>}
-                <button type="submit" className={`py-3 bg-black text-white dark:bg-white dark:text-black rounded-lg text-sm font-medium ${onboardingStep === 1 ? 'w-full' : 'w-1/2'}`}>
+                {onboardingStep > 1 && <button type="button" onClick={() => setOnboardingStep(onboardingStep - 1)} className={`w-1/2 py-3 border border-gray-300 dark:border-gray-800 rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-900 ${btnFocus}`}>Voltar</button>}
+                <button type="submit" className={`py-3 bg-black text-white dark:bg-white dark:text-black rounded-lg text-sm font-medium ${onboardingStep === 1 ? 'w-full' : 'w-1/2'} ${btnFocus}`}>
                   {onboardingStep === 3 ? 'Submeter Pedido' : 'Continuar'}
                 </button>
               </div>
@@ -634,98 +653,142 @@ function MainApp() {
 
     return (
       <div className="min-h-screen bg-white dark:bg-black text-black dark:text-white font-sans flex flex-col pb-20 md:pb-0">
-        {toastMessage && <div className="fixed top-5 right-5 z-50 bg-black text-white dark:bg-white dark:text-black px-4 py-2.5 rounded-lg text-xs shadow-lg">{toastMessage}</div>}
+        <style>{`
+          @keyframes modal-fade-scale {
+            0% { opacity: 0; transform: scale(0.95); }
+            100% { opacity: 1; transform: scale(1); }
+          }
+          .animate-modal {
+            animation: modal-fade-scale 150ms ease-out forwards;
+          }
+        `}</style>
+        
+        {toastMessage && <div className="fixed top-5 right-5 z-50 bg-black text-white dark:bg-white dark:text-black px-4 py-2.5 rounded-lg text-xs shadow-lg animate-modal">{toastMessage}</div>}
 
         <header className="border-b border-gray-200 dark:border-gray-800 sticky top-0 bg-white/80 dark:bg-black/80 backdrop-blur-md z-40">
           <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
             <div className="flex items-center gap-8">
-              <img src={logo} alt="Elo" className="h-8 w-auto dark:invert cursor-pointer" onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); }} />
+              <img src={logo} alt="Elo" className="h-8 w-auto dark:invert cursor-pointer" onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} />
               <nav className="hidden md:flex gap-6 text-sm font-medium">
-                <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); }} className={currentTab === 'feed' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'}>Feed</button>
-                <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); }} className={currentTab === 'rede' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'}>Rede</button>
-                <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); }} className={currentTab === 'notificacoes' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'}>Notificações</button>
-                <button onClick={() => { setCurrentTab('perfil'); setViewingProfileUid(null); }} className={currentTab === 'perfil' && !viewingProfileUid ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'}>Perfil</button>
+                <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); }} className={`${currentTab === 'feed' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Feed</button>
+                <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); }} className={`${currentTab === 'rede' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Rede</button>
+                <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); }} className={`${currentTab === 'notificacoes' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Notificações</button>
+                <button onClick={() => { setCurrentTab('perfil'); setViewingProfileUid(null); }} className={`${currentTab === 'perfil' && !viewingProfileUid ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Perfil</button>
               </nav>
             </div>
-            <div className="flex items-center gap-3">
-              <button onClick={() => setActiveModal('ai')} className="text-xs border border-gray-300 dark:border-gray-800 px-3 py-1.5 rounded-full hover:border-black dark:hover:border-white">Elo AI</button>
-              <button onClick={() => setActiveModal('planos')} className="text-xs bg-black text-white dark:bg-white dark:text-black px-3 py-1.5 rounded-full">Pro</button>
-              <button onClick={() => setActiveModal('settings')} className="text-xs text-gray-400 hover:text-black dark:hover:text-white">Definições</button>
-              {(user.uid === ADMIN_UID || userProfile?.role === 'Admin') && <button onClick={() => setActiveModal('admin')} className="text-xs border border-gray-400 px-2 py-1 rounded">Admin</button>}
-              <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-black dark:hover:text-white">Sair</button>
+            
+            {/* Desktop Right Nav */}
+            <div className="hidden md:flex items-center gap-3">
+              <button onClick={() => setActiveModal('ai')} className={`text-xs border border-gray-300 dark:border-gray-800 px-3 py-1.5 rounded-full hover:border-black dark:hover:border-white ${btnFocus}`}>Elo AI</button>
+              <button onClick={() => setActiveModal('planos')} className={`text-xs bg-black text-white dark:bg-white dark:text-black px-3 py-1.5 rounded-full ${btnFocus}`}>Pro</button>
+              <button onClick={() => setActiveModal('settings')} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white ${btnFocus}`}>Definições</button>
+              {(user.uid === ADMIN_UID || userProfile?.role === 'Admin') && <button onClick={() => setActiveModal('admin')} className={`text-xs border border-gray-400 px-2 py-1 rounded ${btnFocus}`}>Admin</button>}
+              <button onClick={handleLogout} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white ${btnFocus}`}>Sair</button>
+            </div>
+
+            {/* Mobile Hamburger Menu */}
+            <div className="md:hidden relative">
+              <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className={`p-2 text-gray-600 dark:text-gray-300 ${btnFocus}`}>
+                {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+              </button>
+              {isMobileMenuOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg flex flex-col p-2 gap-1 z-50 animate-modal">
+                  <button onClick={() => {setActiveModal('ai'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Elo AI</button>
+                  <button onClick={() => {setActiveModal('planos'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Pro</button>
+                  <button onClick={() => {setActiveModal('settings'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Definições</button>
+                  {(user.uid === ADMIN_UID || userProfile?.role === 'Admin') && (
+                    <button onClick={() => {setActiveModal('admin'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Admin</button>
+                  )}
+                  <button onClick={() => {handleLogout(); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 text-red-500 ${btnFocus}`}>Sair</button>
+                </div>
+              )}
             </div>
           </div>
         </header>
 
-        <main className="max-w-5xl mx-auto px-4 py-10 flex-1 w-full">
+        <main className="max-w-5xl mx-auto px-4 py-10 flex-1 w-full" onClick={() => isMobileMenuOpen && setIsMobileMenuOpen(false)}>
           {currentTab === 'feed' && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
               <div className="md:col-span-2 space-y-8">
-                <div 
+                <button 
                   onClick={() => setActiveModal('createPost')}
-                  className="flex items-center gap-4 border border-gray-200 dark:border-gray-800 p-4 rounded-2xl cursor-pointer hover:border-black dark:hover:border-white transition-colors"
+                  className={`w-full flex items-center gap-4 border border-gray-200 dark:border-gray-800 p-4 rounded-2xl cursor-pointer hover:border-black dark:hover:border-white transition-colors text-left ${btnFocus}`}
                 >
-                  <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center shrink-0">
-                    {userProfile?.avatarUrl ? <img src={userProfile.avatarUrl} alt="" className="w-full h-full rounded-full object-cover" /> : <UserIcon size={20} className="text-gray-400" />}
+                  <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center shrink-0 overflow-hidden">
+                    {userProfile?.avatarUrl ? <img src={userProfile.avatarUrl} alt="" className="w-full h-full object-cover" /> : <UserIcon size={20} className="text-gray-400" />}
                   </div>
                   <div className="text-sm text-gray-400">Criar uma publicação...</div>
-                </div>
+                </button>
 
-                <div className="space-y-8">
-                  {posts.map(post => (
-                    <article key={post.id} className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-4">
-                          <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0">
-                            {post.authorAvatar ? <img src={post.authorAvatar} alt="" className="w-full h-full rounded-full object-cover" /> : post.authorName.charAt(0)}
+                {fetchingPosts ? (
+                  <div className="space-y-8">
+                    {[1, 2, 3].map(i => (
+                      <div key={i} className="animate-pulse bg-gray-100 dark:bg-gray-900/50 h-48 rounded-2xl w-full border border-gray-200 dark:border-gray-800" />
+                    ))}
+                  </div>
+                ) : posts.length === 0 ? (
+                  <div className="py-16 flex flex-col items-center justify-center text-gray-400 space-y-4 text-center">
+                    <Inbox size={48} className="opacity-20" />
+                    <p className="text-sm">Ainda não há publicações.<br />Sê o primeiro a partilhar algo.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-8">
+                    {posts.map(post => (
+                      <article key={post.id} className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0 overflow-hidden">
+                              {post.authorAvatar ? <img src={post.authorAvatar} alt="" className="w-full h-full object-cover" /> : post.authorName.charAt(0)}
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold">{post.authorName}</p>
+                              <p className="text-xs text-gray-500">{post.authorRole}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-sm font-semibold">{post.authorName}</p>
-                            <p className="text-xs text-gray-500">{post.authorRole}</p>
-                          </div>
+                          <span className="text-xs text-gray-400">{post.timestamp}</span>
                         </div>
-                        <span className="text-xs text-gray-400">{post.timestamp}</span>
-                      </div>
 
-                      <p className="text-sm leading-relaxed mb-4">{post.content}</p>
-                      {post.imageUrl && <img src={post.imageUrl} alt="" className="rounded-xl w-full max-h-96 object-cover border border-gray-100 dark:border-gray-900 mb-4" />}
+                        <p className="text-sm leading-relaxed mb-4 whitespace-pre-wrap">{post.content}</p>
+                        {post.imageUrl && <img src={post.imageUrl} alt="" className="rounded-xl w-full max-h-96 object-cover border border-gray-100 dark:border-gray-900 mb-4" />}
 
-                      <div className="flex items-center gap-8 text-xs text-gray-500 pt-4 mt-2 border-t border-gray-100 dark:border-gray-900">
-                        <button onClick={() => toggleLike(post.id, post.likes)} className={`flex items-center gap-2 hover:text-black dark:hover:text-white transition-colors ${post.likes.includes(user.uid) ? 'font-bold text-black dark:text-white' : ''}`}>
-                          <ThumbsUp size={16} /> Gostar ({post.likes.length})
-                        </button>
-                        <button onClick={() => setActiveCommentPostId(activeCommentPostId === post.id ? null : post.id)} className="flex items-center gap-2 hover:text-black dark:hover:text-white transition-colors">
-                          <MessageCircle size={16} /> Comentar ({post.comments.length})
-                        </button>
-                        <button onClick={() => handleShare(post.id)} className="flex items-center gap-2 hover:text-black dark:hover:text-white transition-colors">
-                          <Share2 size={16} /> Partilhar
-                        </button>
-                      </div>
+                        <div className="flex items-center gap-8 text-xs text-gray-500 pt-4 mt-2 border-t border-gray-100 dark:border-gray-900">
+                          <button onClick={() => toggleLike(post.id, post.likes)} className={`flex items-center gap-2 hover:text-black dark:hover:text-white transition-colors ${post.likes.includes(user.uid) ? 'font-bold text-black dark:text-white' : ''} ${btnFocus}`}>
+                            <ThumbsUp size={16} /> Gostar ({post.likes.length})
+                          </button>
+                          <button onClick={() => setActiveCommentPostId(activeCommentPostId === post.id ? null : post.id)} className={`flex items-center gap-2 hover:text-black dark:hover:text-white transition-colors ${btnFocus}`}>
+                            <MessageCircle size={16} /> Comentar ({post.comments.length})
+                          </button>
+                          <button onClick={() => handleShare(post.id)} className={`flex items-center gap-2 hover:text-black dark:hover:text-white transition-colors ${btnFocus}`}>
+                            <Share2 size={16} /> Partilhar
+                          </button>
+                        </div>
 
-                      {activeCommentPostId === post.id && (
-                        <div className="pt-5 mt-5 border-t border-gray-100 dark:border-gray-900 space-y-4">
-                          <div className="flex gap-3">
-                            <input type="text" placeholder="Escreve um comentário..." value={commentInput} onChange={e => setCommentInput(e.target.value)} className="flex-1 border border-gray-200 dark:border-gray-800 bg-transparent px-4 py-2 rounded-xl text-sm focus:outline-none" />
-                            <button onClick={() => handleAddComment(post.id)} className="bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl text-sm font-medium flex items-center justify-center">
-                              <Send size={16} />
-                            </button>
-                          </div>
-                          <div className="space-y-3">
-                            {post.comments.map(c => (
-                              <div key={c.id} className="bg-gray-50 dark:bg-gray-900 p-3 rounded-xl text-sm space-y-1">
-                                <div className="flex justify-between items-baseline">
-                                  <span className="font-semibold text-xs">{c.authorName}</span>
-                                  <span className="text-[10px] text-gray-400">{c.timestamp}</span>
+                        {activeCommentPostId === post.id && (
+                          <div className="pt-5 mt-5 border-t border-gray-100 dark:border-gray-900 space-y-4">
+                            <div className="flex gap-3">
+                              <input maxLength={500} type="text" placeholder="Escreve um comentário..." value={commentInput} onChange={e => setCommentInput(e.target.value)} className="flex-1 border border-gray-200 dark:border-gray-800 bg-transparent px-4 py-2 rounded-xl text-sm focus:outline-none focus:border-black dark:focus:border-white" />
+                              <button onClick={() => handleAddComment(post.id)} className={`bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl text-sm font-medium flex items-center justify-center ${btnFocus}`}>
+                                <Send size={16} />
+                              </button>
+                            </div>
+                            <div className="text-right text-[10px] text-gray-400 pr-16">{commentInput.length}/500</div>
+                            <div className="space-y-3">
+                              {post.comments.map(c => (
+                                <div key={c.id} className="bg-gray-50 dark:bg-gray-900 p-3 rounded-xl text-sm space-y-1">
+                                  <div className="flex justify-between items-baseline">
+                                    <span className="font-semibold text-xs">{c.authorName}</span>
+                                    <span className="text-[10px] text-gray-400">{c.timestamp}</span>
+                                  </div>
+                                  <p className="text-gray-700 dark:text-gray-300 text-xs">{c.text}</p>
                                 </div>
-                                <p className="text-gray-700 dark:text-gray-300 text-xs">{c.text}</p>
-                              </div>
-                            ))}
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      )}
-                    </article>
-                  ))}
-                </div>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-8">
@@ -737,7 +800,7 @@ function MainApp() {
                     <ul className="space-y-4">
                       {rssNews.map((news, idx) => (
                         <li key={idx} className="border-b border-gray-100 dark:border-gray-900 pb-3 last:border-0 last:pb-0">
-                          <a href={news.link} target="_blank" rel="noopener noreferrer" className="text-sm font-medium hover:underline line-clamp-2 leading-snug">
+                          <a href={news.link} target="_blank" rel="noopener noreferrer" className={`text-sm font-medium hover:underline line-clamp-2 leading-snug rounded-sm ${btnFocus}`}>
                             {news.title}
                           </a>
                         </li>
@@ -758,28 +821,42 @@ function MainApp() {
 
           {currentTab === 'rede' && (
             <div className="space-y-6">
-              <input type="text" placeholder="Pesquisar por nome, cargo ou localização..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-4 rounded-xl text-sm focus:outline-none" />
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {networkUsers.filter(u => u.name.toLowerCase().includes(searchTerm.toLowerCase()) || u.role.toLowerCase().includes(searchTerm.toLowerCase()) || u.location.toLowerCase().includes(searchTerm.toLowerCase())).map(netUser => (
-                  <div key={netUser.uid} className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6 flex flex-col justify-between space-y-4">
-                    <div className="flex items-start gap-4">
-                      <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0">
-                        {netUser.avatarUrl ? <img src={netUser.avatarUrl} alt="" className="w-full h-full rounded-full object-cover" /> : netUser.name.charAt(0)}
+              <input type="text" placeholder="Pesquisar por nome, cargo ou localização..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-4 rounded-xl text-sm focus:outline-none focus:border-black dark:focus:border-white" />
+              
+              {fetchingNetwork ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {[1, 2, 3, 4].map(i => (
+                    <div key={i} className="animate-pulse bg-gray-100 dark:bg-gray-900/50 h-40 rounded-2xl w-full border border-gray-200 dark:border-gray-800" />
+                  ))}
+                </div>
+              ) : networkUsers.length === 0 ? (
+                <div className="py-16 flex flex-col items-center justify-center text-gray-400 space-y-4 text-center">
+                  <Users size={48} className="opacity-20" />
+                  <p className="text-sm">Ainda não há outros membros na rede.<br />Volta em breve.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {networkUsers.filter(u => u.name.toLowerCase().includes(searchTerm.toLowerCase()) || u.role.toLowerCase().includes(searchTerm.toLowerCase()) || u.location.toLowerCase().includes(searchTerm.toLowerCase())).map(netUser => (
+                    <div key={netUser.uid} className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6 flex flex-col justify-between space-y-4">
+                      <div className="flex items-start gap-4">
+                        <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0 overflow-hidden">
+                          {netUser.avatarUrl ? <img src={netUser.avatarUrl} alt="" className="w-full h-full object-cover" /> : netUser.name.charAt(0)}
+                        </div>
+                        <div className="space-y-1 text-sm">
+                          <h4 className="font-semibold">{netUser.name}</h4>
+                          <p className="text-xs text-gray-500">{netUser.role} • {netUser.location}</p>
+                          <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mt-2">{netUser.pitch}</p>
+                          {netUser.lookingFor && <span className="inline-block mt-2 text-[10px] border border-gray-300 dark:border-gray-700 px-2.5 py-1 rounded-full text-gray-600 dark:text-gray-300">Procura: {netUser.lookingFor}</span>}
+                        </div>
                       </div>
-                      <div className="space-y-1 text-sm">
-                        <h4 className="font-semibold">{netUser.name}</h4>
-                        <p className="text-xs text-gray-500">{netUser.role} • {netUser.location}</p>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mt-2">{netUser.pitch}</p>
-                        {netUser.lookingFor && <span className="inline-block mt-2 text-[10px] border border-gray-300 dark:border-gray-700 px-2.5 py-1 rounded-full text-gray-600 dark:text-gray-300">Procura: {netUser.lookingFor}</span>}
+                      <div className="flex gap-3 pt-4 mt-2 border-t border-gray-100 dark:border-gray-900">
+                        <button onClick={() => { setViewingProfileUid(netUser.uid); setCurrentTab('perfil'); }} className={`flex-1 py-2 border border-gray-200 dark:border-gray-800 rounded-xl text-xs hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>Ver Perfil</button>
+                        <button onClick={() => toggleFollow(netUser.uid)} className={`flex-1 py-2 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>{followingUids.includes(netUser.uid) ? 'A seguir' : 'Seguir'}</button>
                       </div>
                     </div>
-                    <div className="flex gap-3 pt-4 mt-2 border-t border-gray-100 dark:border-gray-900">
-                      <button onClick={() => { setViewingProfileUid(netUser.uid); setCurrentTab('perfil'); }} className="flex-1 py-2 border border-gray-200 dark:border-gray-800 rounded-xl text-xs hover:border-black dark:hover:border-white transition-colors">Ver Perfil</button>
-                      <button onClick={() => toggleFollow(netUser.uid)} className="flex-1 py-2 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium">{followingUids.includes(netUser.uid) ? 'A seguir' : 'Seguir'}</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -787,16 +864,24 @@ function MainApp() {
             <div className="max-w-2xl mx-auto space-y-6">
               <div className="flex justify-between items-center pb-4 border-b border-gray-200 dark:border-gray-800">
                 <h2 className="text-lg font-semibold">Notificações</h2>
-                <button onClick={() => setNotifications(notifications.map(n => ({ ...n, read: true })))} className="text-xs text-gray-500 hover:text-black dark:hover:text-white">Marcar todas como lidas</button>
+                <button onClick={() => setNotifications(notifications.map(n => ({ ...n, read: true })))} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white ${btnFocus}`}>Marcar todas como lidas</button>
               </div>
-              <div className="space-y-3">
-                {notifications.map(n => (
-                  <div key={n.id} className={`p-4 rounded-xl border flex items-center justify-between ${n.read ? 'border-gray-100 dark:border-gray-900 opacity-60' : 'border-gray-300 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50'}`}>
-                    <p className="text-sm">{n.text}</p>
-                    <span className="text-[10px] text-gray-400">{n.timestamp}</span>
-                  </div>
-                ))}
-              </div>
+              
+              {notifications.length === 0 ? (
+                <div className="py-16 flex flex-col items-center justify-center text-gray-400 space-y-4 text-center">
+                  <Bell size={48} className="opacity-20" />
+                  <p className="text-sm">Sem notificações por agora.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notifications.map(n => (
+                    <div key={n.id} className={`p-4 rounded-xl border flex items-center justify-between ${n.read ? 'border-gray-100 dark:border-gray-900 opacity-60' : 'border-gray-300 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50'}`}>
+                      <p className="text-sm">{n.text}</p>
+                      <span className="text-[10px] text-gray-400">{n.timestamp}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -807,20 +892,20 @@ function MainApp() {
                   {activeProfile.coverUrl && <img src={activeProfile.coverUrl} alt="" className="w-full h-full object-cover" />}
                 </div>
                 <div className="p-8 relative pt-0">
-                  <div className="w-24 h-24 bg-gray-100 dark:bg-gray-900 rounded-full border-4 border-white dark:border-black flex items-center justify-center font-bold text-2xl uppercase -mt-12 mb-6 shrink-0">
-                    {activeProfile.avatarUrl ? <img src={activeProfile.avatarUrl} alt="" className="w-full h-full rounded-full object-cover" /> : activeProfile.name.charAt(0)}
+                  <div className="w-24 h-24 bg-gray-100 dark:bg-gray-900 rounded-full border-4 border-white dark:border-black flex items-center justify-center font-bold text-2xl uppercase -mt-12 mb-6 shrink-0 overflow-hidden">
+                    {activeProfile.avatarUrl ? <img src={activeProfile.avatarUrl} alt="" className="w-full h-full object-cover" /> : activeProfile.name.charAt(0)}
                   </div>
-                  <div className="flex justify-between items-start mb-8">
+                  <div className="flex flex-col md:flex-row md:justify-between items-start mb-8 gap-4">
                     <div className="space-y-1">
                       <h2 className="text-2xl font-bold">{activeProfile.name}</h2>
                       <p className="text-sm text-gray-500">{activeProfile.role} • {activeProfile.location}</p>
                     </div>
                     {!viewingProfileUid || viewingProfileUid === user.uid ? (
-                      <button onClick={() => { setSettingsTab('perfil'); setActiveModal('settings'); }} className="text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl hover:border-black dark:hover:border-white transition-colors">Editar Perfil</button>
+                      <button onClick={() => { setSettingsTab('perfil'); setActiveModal('settings'); }} className={`text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>Editar Perfil</button>
                     ) : (
-                      <div className="flex gap-3">
-                        <button onClick={() => showToast(`Reunião com ${activeProfile.name} solicitada.`)} className="text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl font-medium">Reunião</button>
-                        <button onClick={() => toggleFollow(activeProfile.uid)} className="text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl">{followingUids.includes(activeProfile.uid) ? 'A seguir' : 'Seguir'}</button>
+                      <div className="flex gap-3 w-full md:w-auto">
+                        <button onClick={() => showToast(`Reunião com ${activeProfile.name} solicitada.`)} className={`flex-1 md:flex-none text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl font-medium ${btnFocus}`}>Reunião</button>
+                        <button onClick={() => toggleFollow(activeProfile.uid)} className={`flex-1 md:flex-none text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl ${btnFocus}`}>{followingUids.includes(activeProfile.uid) ? 'A seguir' : 'Seguir'}</button>
                       </div>
                     )}
                   </div>
@@ -837,7 +922,7 @@ function MainApp() {
                     )}
                     {activeProfile.linkedinUrl && (
                       <div>
-                        <a href={activeProfile.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-black dark:hover:text-white underline">LinkedIn Profile</a>
+                        <a href={activeProfile.linkedinUrl} target="_blank" rel="noopener noreferrer" className={`text-gray-500 hover:text-black dark:hover:text-white underline rounded-sm ${btnFocus}`}>LinkedIn Profile</a>
                       </div>
                     )}
                   </div>
@@ -848,54 +933,57 @@ function MainApp() {
         </main>
 
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-black border-t border-gray-200 dark:border-gray-800 flex justify-around py-3 text-xs z-40">
-          <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); }} className={currentTab === 'feed' ? 'font-bold' : 'text-gray-400'}>Feed</button>
-          <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); }} className={currentTab === 'rede' ? 'font-bold' : 'text-gray-400'}>Rede</button>
-          <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); }} className={currentTab === 'notificacoes' ? 'font-bold' : 'text-gray-400'}>Notificações</button>
-          <button onClick={() => { setCurrentTab('perfil'); setViewingProfileUid(null); }} className={currentTab === 'perfil' && !viewingProfileUid ? 'font-bold' : 'text-gray-400'}>Perfil</button>
+          <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} className={`${currentTab === 'feed' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Feed</button>
+          <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} className={`${currentTab === 'rede' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Rede</button>
+          <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} className={`${currentTab === 'notificacoes' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Notificações</button>
+          <button onClick={() => { setCurrentTab('perfil'); setViewingProfileUid(null); setIsMobileMenuOpen(false); }} className={`${currentTab === 'perfil' && !viewingProfileUid ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Perfil</button>
         </nav>
 
         {activeModal === 'createPost' && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-lg w-full space-y-4">
+            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-lg w-full space-y-4 animate-modal">
               <h3 className="text-base font-semibold">Nova Publicação</h3>
               <form onSubmit={handleCreatePost} className="space-y-4">
-                <textarea placeholder="O que queres partilhar com a rede?" value={newPostText} onChange={e => setNewPostText(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-4 rounded-xl text-sm h-32 focus:outline-none" />
+                <div>
+                  <textarea maxLength={500} placeholder="O que queres partilhar com a rede?" value={newPostText} onChange={e => setNewPostText(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-4 rounded-xl text-sm h-32 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <div className="text-right text-[10px] text-gray-400">{newPostText.length}/500</div>
+                </div>
                 <div className="flex items-center gap-3">
-                  <label className="cursor-pointer border border-gray-200 dark:border-gray-800 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors">
+                  <label className="cursor-pointer border border-gray-200 dark:border-gray-800 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors focus-within:ring-2 focus-within:ring-black dark:focus-within:ring-white">
                     <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
                     <ImageIcon size={20} className="text-gray-500" />
                   </label>
                   {newPostImage && <span className="text-xs text-gray-500">Imagem anexada pronta a publicar.</span>}
                 </div>
                 <div className="flex justify-end gap-3 pt-2">
-                  <button type="button" onClick={() => setActiveModal('none')} className="px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs">Cancelar</button>
-                  <button type="submit" className="px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium">Publicar</button>
+                  <button type="button" onClick={() => setActiveModal('none')} className={`px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs ${btnFocus}`}>Cancelar</button>
+                  <button type="submit" className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Publicar</button>
                 </div>
               </form>
             </div>
           </div>
         )}
 
-        {activeModal === 'settings' && userProfile && (
+        {activeModal === 'settings' && editFormData && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-8 max-w-2xl w-full space-y-6 max-h-[90vh] overflow-y-auto">
+            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-8 max-w-2xl w-full space-y-6 max-h-[90vh] overflow-y-auto animate-modal">
               <div className="flex justify-between items-center pb-2">
                 <h3 className="text-lg font-semibold">Definições</h3>
-                <button onClick={() => setActiveModal('none')} className="text-xs text-gray-500 hover:text-black dark:hover:text-white">Fechar</button>
+                <button onClick={() => setActiveModal('none')} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white ${btnFocus} p-1`}>Fechar</button>
               </div>
 
               <div className="flex gap-6 border-b border-gray-100 dark:border-gray-900 text-sm overflow-x-auto pb-1">
-                <button onClick={() => setSettingsTab('aparencia')} className={settingsTab === 'aparencia' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'}>Aparência</button>
-                <button onClick={() => setSettingsTab('conta')} className={settingsTab === 'conta' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'}>Conta</button>
-                <button onClick={() => setSettingsTab('privacidade')} className={settingsTab === 'privacidade' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'}>Privacidade</button>
-                <button onClick={() => setSettingsTab('notificacoes')} className={settingsTab === 'notificacoes' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'}>Notificações</button>
-                <button onClick={() => setSettingsTab('perfil')} className={settingsTab === 'perfil' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'}>Editar Perfil</button>
+                <button onClick={() => setSettingsTab('aparencia')} className={`${settingsTab === 'aparencia' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Aparência</button>
+                <button onClick={() => setSettingsTab('conta')} className={`${settingsTab === 'conta' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Conta</button>
+                <button onClick={() => setSettingsTab('privacidade')} className={`${settingsTab === 'privacidade' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Privacidade</button>
+                <button onClick={() => setSettingsTab('notificacoes')} className={`${settingsTab === 'notificacoes' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Notificações</button>
+                <button onClick={() => setSettingsTab('perfil')} className={`${settingsTab === 'perfil' ? 'font-bold border-b-2 border-black dark:border-white pb-2' : 'text-gray-400 pb-2'} ${btnFocus}`}>Editar Perfil</button>
               </div>
 
               {settingsTab === 'aparencia' && (
                 <div className="flex items-center justify-between text-sm py-4">
                   <span>Modo Escuro</span>
-                  <button onClick={() => setIsDarkMode(!isDarkMode)} className="border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs">{isDarkMode ? 'Ativo' : 'Inativo'}</button>
+                  <button onClick={() => setIsDarkMode(!isDarkMode)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{isDarkMode ? 'Ativo' : 'Inativo'}</button>
                 </div>
               )}
 
@@ -905,15 +993,15 @@ function MainApp() {
                   <div className="space-y-3">
                     <p className="font-semibold">Alterar Email</p>
                     <input type="email" placeholder="Novo email" value={newEmail} onChange={e => setNewEmail(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
-                    <button onClick={handleUpdateEmail} className="px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium">Atualizar Email</button>
+                    <button onClick={handleUpdateEmail} className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Atualizar Email</button>
                   </div>
                   <div className="space-y-3 pt-6 border-t border-gray-100 dark:border-gray-900">
                     <p className="font-semibold">Alterar Palavra-passe</p>
                     <input type="password" placeholder="Nova palavra-passe" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl focus:outline-none focus:border-black dark:focus:border-white" />
-                    <button onClick={handleUpdatePassword} className="px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium">Atualizar Palavra-passe</button>
+                    <button onClick={handleUpdatePassword} className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Atualizar Palavra-passe</button>
                   </div>
                   <div className="pt-6 border-t border-gray-100 dark:border-gray-900">
-                    <button onClick={handleDeleteAccount} className="text-red-500 font-medium hover:underline text-xs">Eliminar Conta Definitivamente</button>
+                    <button onClick={handleDeleteAccount} className={`text-red-500 font-medium hover:underline text-xs ${btnFocus} rounded-sm`}>Eliminar Conta Definitivamente</button>
                   </div>
                 </div>
               )}
@@ -922,11 +1010,11 @@ function MainApp() {
                 <div className="space-y-6 text-sm py-2">
                   <div className="flex items-center justify-between">
                     <span>Perfil visível na Rede</span>
-                    <button onClick={() => handlePrivacyToggle('visibleInNetwork', !visibleInNetwork)} className="border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs">{visibleInNetwork ? 'Sim' : 'Não'}</button>
+                    <button onClick={() => handlePrivacyToggle('visibleInNetwork', !visibleInNetwork)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{visibleInNetwork ? 'Sim' : 'Não'}</button>
                   </div>
                   <div className="flex items-center justify-between">
                     <span>Aceitar pedidos de reunião</span>
-                    <button onClick={() => handlePrivacyToggle('acceptsMeetings', !acceptsMeetings)} className="border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs">{acceptsMeetings ? 'Sim' : 'Não'}</button>
+                    <button onClick={() => handlePrivacyToggle('acceptsMeetings', !acceptsMeetings)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{acceptsMeetings ? 'Sim' : 'Não'}</button>
                   </div>
                 </div>
               )}
@@ -935,19 +1023,19 @@ function MainApp() {
                 <div className="space-y-6 text-sm py-2">
                   <div className="flex items-center justify-between">
                     <span>Notificar em novos seguidores</span>
-                    <button onClick={() => { const v = !notifFollowers; setNotifFollowers(v); localStorage.setItem('elo_notif_followers', String(v)); }} className="border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs">{notifFollowers ? 'Sim' : 'Não'}</button>
+                    <button onClick={() => { const v = !notifFollowers; setNotifFollowers(v); localStorage.setItem('elo_notif_followers', String(v)); }} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{notifFollowers ? 'Sim' : 'Não'}</button>
                   </div>
                   <div className="flex items-center justify-between">
                     <span>Notificar em pedidos de reunião</span>
-                    <button onClick={() => { const v = !notifMeetings; setNotifMeetings(v); localStorage.setItem('elo_notif_meetings', String(v)); }} className="border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs">{notifMeetings ? 'Sim' : 'Não'}</button>
+                    <button onClick={() => { const v = !notifMeetings; setNotifMeetings(v); localStorage.setItem('elo_notif_meetings', String(v)); }} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{notifMeetings ? 'Sim' : 'Não'}</button>
                   </div>
                   <p className="text-[10px] text-gray-400 mt-4 italic">Nota: As notificações por email ainda não estão ativas na plataforma.</p>
                 </div>
               )}
 
-              {settingsTab === 'perfil' && editFormData && (
+              {settingsTab === 'perfil' && (
                 <form onSubmit={handleUpdateProfile} className="space-y-4 text-sm py-2">
-                  <div className="grid grid-cols-2 gap-4 pb-2 border-b border-gray-100 dark:border-gray-900">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pb-2 border-b border-gray-100 dark:border-gray-900">
                     <div className="space-y-2">
                       <label className="text-xs font-semibold text-gray-500">Foto de Perfil (Avatar)</label>
                       <input type="file" accept="image/*" onChange={e => handleFileChange(e, 'avatarUrl')} className="w-full text-xs" />
@@ -958,17 +1046,25 @@ function MainApp() {
                     </div>
                   </div>
                   
-                  <input type="text" placeholder="Nome" value={editFormData.name} onChange={e => setEditFormData({ ...editFormData, name: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                  <div className="grid grid-cols-2 gap-4">
-                    <input type="text" placeholder="Cargo" value={editFormData.role} onChange={e => setEditFormData({ ...editFormData, role: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                    <input type="text" placeholder="Localização" value={editFormData.location} onChange={e => setEditFormData({ ...editFormData, location: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <input type="text" placeholder="Nome" value={editFormData.name} onChange={e => setEditFormData({ ...editFormData, name: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <input type="text" placeholder="Cargo" value={editFormData.role} onChange={e => setEditFormData({ ...editFormData, role: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                    <input type="text" placeholder="Localização" value={editFormData.location} onChange={e => setEditFormData({ ...editFormData, location: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
                   </div>
                   <input type="url" placeholder="URL do LinkedIn" value={editFormData.linkedinUrl || ''} onChange={e => setEditFormData({ ...editFormData, linkedinUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                  <textarea placeholder="O teu Pitch curto" value={editFormData.pitch} onChange={e => setEditFormData({ ...editFormData, pitch: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
-                  <textarea placeholder="O que procuras no Elo?" value={editFormData.lookingFor || ''} onChange={e => setEditFormData({ ...editFormData, lookingFor: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                  
+                  <div>
+                    <textarea maxLength={300} placeholder="O teu Pitch curto" value={editFormData.pitch} onChange={e => setEditFormData({ ...editFormData, pitch: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                    <div className="text-right text-[10px] text-gray-400">{editFormData.pitch.length}/300</div>
+                  </div>
+                  
+                  <div>
+                    <textarea maxLength={300} placeholder="O que procuras no Elo?" value={editFormData.lookingFor || ''} onChange={e => setEditFormData({ ...editFormData, lookingFor: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                    <div className="text-right text-[10px] text-gray-400">{(editFormData.lookingFor || '').length}/300</div>
+                  </div>
                   
                   <div className="pt-2">
-                    <button type="submit" className="w-full py-3 bg-black text-white dark:bg-white dark:text-black rounded-xl font-medium">Guardar Alterações</button>
+                    <button type="submit" className={`w-full py-3 bg-black text-white dark:bg-white dark:text-black rounded-xl font-medium ${btnFocus}`}>Guardar Alterações</button>
                   </div>
                 </form>
               )}
@@ -978,20 +1074,20 @@ function MainApp() {
 
         {activeModal === 'planos' && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-8 max-w-sm w-full space-y-6 text-center">
+            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-8 max-w-sm w-full space-y-6 text-center animate-modal">
               <h3 className="text-lg font-bold">Conta Pro Ativa</h3>
               <p className="text-sm text-gray-500 leading-relaxed">A tua conta tem acesso Pro total e ilimitado incluído na aprovação da comunidade.</p>
-              <button onClick={() => setActiveModal('none')} className="w-full py-3 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium">Entendido</button>
+              <button onClick={() => setActiveModal('none')} className={`w-full py-3 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium ${btnFocus}`}>Entendido</button>
             </div>
           </div>
         )}
 
         {activeModal === 'ai' && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-md w-full space-y-4 flex flex-col h-[500px]">
+            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-md w-full space-y-4 flex flex-col h-[500px] animate-modal">
               <div className="flex justify-between items-center border-b border-gray-200 dark:border-gray-800 pb-3">
                 <h3 className="text-sm font-semibold">Assistente Elo AI</h3>
-                <button onClick={() => setActiveModal('none')} className="text-xs text-gray-400">Fechar</button>
+                <button onClick={() => setActiveModal('none')} className={`text-xs text-gray-400 ${btnFocus} p-1 rounded-sm`}>Fechar</button>
               </div>
               <div className="flex-1 overflow-y-auto space-y-4 text-sm p-2">
                 {aiMessages.map((m, idx) => (
@@ -1002,7 +1098,7 @@ function MainApp() {
               </div>
               <form onSubmit={handleAiSend} className="flex gap-3 pt-3 border-t border-gray-200 dark:border-gray-800">
                 <input type="text" placeholder="Pergunta à AI..." value={aiInput} onChange={e => setAiInput(e.target.value)} className="flex-1 border border-gray-200 dark:border-gray-800 bg-transparent px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-black dark:focus:border-white" />
-                <button type="submit" className="bg-black text-white dark:bg-white dark:text-black px-4 py-3 rounded-xl text-sm font-medium"><Send size={18} /></button>
+                <button type="submit" className={`bg-black text-white dark:bg-white dark:text-black px-4 py-3 rounded-xl text-sm font-medium ${btnFocus}`}><Send size={18} /></button>
               </form>
             </div>
           </div>
@@ -1010,10 +1106,10 @@ function MainApp() {
 
         {activeModal === 'admin' && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-2xl w-full space-y-6 max-h-[85vh] overflow-y-auto">
+            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-2xl w-full space-y-6 max-h-[85vh] overflow-y-auto animate-modal">
               <div className="flex justify-between items-center border-b border-gray-200 dark:border-gray-800 pb-3">
                 <h3 className="text-base font-semibold">Painel de Administração</h3>
-                <button onClick={() => setActiveModal('none')} className="text-xs text-gray-400 hover:text-black dark:hover:text-white transition-colors">Fechar</button>
+                <button onClick={() => setActiveModal('none')} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white transition-colors ${btnFocus} p-1 rounded-sm`}>Fechar</button>
               </div>
 
               <div className="space-y-3">
@@ -1021,14 +1117,14 @@ function MainApp() {
                 {pendingRequests.length === 0 ? <p className="text-sm text-gray-500">Sem pedidos pendentes no momento.</p> : (
                   <div className="space-y-3">
                     {pendingRequests.map(req => (
-                      <div key={req.uid} className="border border-gray-200 dark:border-gray-800 p-4 rounded-xl text-sm flex justify-between items-center">
+                      <div key={req.uid} className="border border-gray-200 dark:border-gray-800 p-4 rounded-xl text-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                         <div className="space-y-1">
                           <p className="font-semibold">{req.name} <span className="text-xs text-gray-500 font-normal">({req.email})</span></p>
                           <p className="text-xs text-gray-500">{req.role} • {req.location}</p>
                         </div>
                         <div className="flex gap-2">
-                          <button onClick={() => handleAdminApprove(req.uid)} className="px-3 py-1.5 bg-black text-white dark:bg-white dark:text-black rounded-lg text-xs font-medium">Aprovar</button>
-                          <button onClick={() => handleAdminReject(req.uid)} className="px-3 py-1.5 border border-red-500 text-red-500 rounded-lg text-xs font-medium hover:bg-red-50 dark:hover:bg-red-950 transition-colors">Rejeitar</button>
+                          <button onClick={() => handleAdminApprove(req.uid)} className={`px-3 py-1.5 bg-black text-white dark:bg-white dark:text-black rounded-lg text-xs font-medium ${btnFocus}`}>Aprovar</button>
+                          <button onClick={() => handleAdminReject(req.uid)} className={`px-3 py-1.5 border border-red-500 text-red-500 rounded-lg text-xs font-medium hover:bg-red-50 dark:hover:bg-red-950 transition-colors ${btnFocus}`}>Rejeitar</button>
                         </div>
                       </div>
                     ))}
@@ -1040,12 +1136,12 @@ function MainApp() {
                 <h4 className="text-xs font-bold uppercase text-gray-400 tracking-wider">Membros Ativos ({approvedMembers.length})</h4>
                 <div className="space-y-3">
                   {approvedMembers.map(memb => (
-                    <div key={memb.uid} className="border border-gray-100 dark:border-gray-900 p-4 rounded-xl text-sm flex justify-between items-center">
+                    <div key={memb.uid} className="border border-gray-100 dark:border-gray-900 p-4 rounded-xl text-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                       <div className="space-y-1">
                         <p className="font-semibold">{memb.name}</p>
                         <p className="text-xs text-gray-500">{memb.email}</p>
                       </div>
-                      <button onClick={() => handleAdminRevoke(memb.uid)} className="px-3 py-1.5 text-red-500 underline text-xs hover:text-red-700 transition-colors">Revogar Acesso</button>
+                      <button onClick={() => handleAdminRevoke(memb.uid)} className={`px-3 py-1.5 text-red-500 underline text-xs hover:text-red-700 transition-colors ${btnFocus} rounded-sm`}>Revogar Acesso</button>
                     </div>
                   ))}
                 </div>
@@ -1069,12 +1165,12 @@ function MainApp() {
       <div className="sm:mx-auto sm:w-full sm:max-w-sm px-6">
         {authError && <div className="mb-6 p-4 border border-red-500/30 text-red-500 text-xs rounded-xl">{authError}</div>}
         <div className="space-y-4">
-          <button onClick={handleGoogleLogin} className="w-full flex justify-center items-center py-3.5 px-4 border border-gray-300 dark:border-gray-800 rounded-xl text-sm font-medium hover:border-black dark:hover:border-white transition-colors">
+          <button onClick={handleGoogleLogin} className={`w-full flex justify-center items-center py-3.5 px-4 border border-gray-300 dark:border-gray-800 rounded-xl text-sm font-medium hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>
             <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
             Google
           </button>
           
-          <button onClick={handleGithubLogin} className="w-full flex justify-center items-center py-3.5 px-4 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity">
+          <button onClick={handleGithubLogin} className={`w-full flex justify-center items-center py-3.5 px-4 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity ${btnFocus}`}>
             <svg className="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 24 24"><path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" /></svg>
             GitHub
           </button>
@@ -1091,14 +1187,14 @@ function MainApp() {
           <input type="email" placeholder="Email" value={emailInput} onChange={e => setEmailInput(e.target.value)} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
           <input type="password" placeholder="Palavra-passe" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
           <div className="pt-4">
-            <button type="submit" className="w-full py-3.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity">
+            <button type="submit" className={`w-full py-3.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity ${btnFocus}`}>
               {isSignUp ? 'Registar' : 'Entrar'}
             </button>
           </div>
         </form>
 
         <div className="mt-8 text-center">
-          <button onClick={() => setIsSignUp(!isSignUp)} className="text-xs text-gray-500 hover:text-black dark:hover:text-white transition-colors">
+          <button onClick={() => setIsSignUp(!isSignUp)} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white transition-colors ${btnFocus} rounded-sm p-1`}>
             {isSignUp ? 'Já tens conta? Entrar' : 'Não tens conta? Criar uma'}
           </button>
         </div>
@@ -1107,7 +1203,6 @@ function MainApp() {
   );
 }
 
-// 4. EXPORT COM ERROR BOUNDARY WRAPPER
 export default function App() {
   return (
     <ErrorBoundary>
