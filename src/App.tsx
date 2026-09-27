@@ -149,7 +149,8 @@ function MainApp() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
 
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => localStorage.getItem('elo_theme') === 'dark');
+  // Use a fresh preference key so the old dark-by-default value cannot override the new light default.
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => localStorage.getItem('elo_theme_v2') === 'dark');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [isSignUp, setIsSignUp] = useState(false);
@@ -312,10 +313,10 @@ function MainApp() {
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('elo_theme', 'dark');
+      localStorage.setItem('elo_theme_v2', 'dark');
     } else {
       document.documentElement.classList.remove('dark');
-      localStorage.setItem('elo_theme', 'light');
+      localStorage.setItem('elo_theme_v2', 'light');
     }
   }, [isDarkMode]);
 
