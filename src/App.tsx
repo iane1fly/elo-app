@@ -34,7 +34,7 @@ import {
 import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon } from 'lucide-react';
 import logo from './logo.png';
 
-const ADMIN_UID = 'ADMIN_MASTER_UID_ELO';
+const ADMIN_UID = 'eExYyC3FRsOkSIbzy1tENc41nDm2';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -91,11 +91,47 @@ interface NotificationItem {
   read: boolean;
 }
 
-export default function App() {
+// 4. GLOBAL ERROR BOUNDARY
+class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean}> {
+  constructor(props: {children: React.ReactNode}) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("App Error Boundary Catch:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#f5f5f7] dark:bg-black text-black dark:text-white flex flex-col justify-center items-center font-sans">
+          <h1 className="text-xl font-bold mb-4">Algo correu mal.</h1>
+          <button 
+            onClick={() => window.location.reload()} 
+            className="px-4 py-2 bg-black text-white dark:bg-white dark:text-black rounded-lg text-sm font-medium"
+          >
+            Recarrega a página
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function MainApp() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [accessStatus, setAccessStatus] = useState<AccessStatus>('none');
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  
+  // 1. ESTADO ISOLADO PARA EDIÇÃO DE PERFIL
+  const [editFormData, setEditFormData] = useState<UserProfile | null>(null);
 
   const [currentTab, setCurrentTab] = useState<'feed' | 'rede' | 'notificacoes' | 'perfil'>('feed');
   const [activeModal, setActiveModal] = useState<'none' | 'settings' | 'planos' | 'ai' | 'admin' | 'createPost'>('none');
@@ -156,6 +192,7 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  // Auth Listener
   useEffect(() => {
     let unsubscribeSnapshot: () => void;
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
@@ -186,6 +223,7 @@ export default function App() {
     return () => { unsubscribeAuth(); if (unsubscribeSnapshot) unsubscribeSnapshot(); };
   }, []);
 
+  // Theme Sync
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
@@ -196,6 +234,7 @@ export default function App() {
     }
   }, [isDarkMode]);
 
+  // Feed & RSS
   useEffect(() => {
     if (accessStatus === 'approved') {
       const qPosts = query(collection(db, 'posts'), orderBy('createdAt', 'desc'));
@@ -219,10 +258,11 @@ export default function App() {
     }
   }, [accessStatus]);
 
+  // 3. REAL-TIME NETWORK LIST (onSnapshot insted of getDocs)
   useEffect(() => {
     if (accessStatus === 'approved') {
       const q = query(collection(db, 'accessRequests'), where('status', '==', 'approved'));
-      getDocs(q).then(snapshot => {
+      const unsubNetwork = onSnapshot(q, snapshot => {
         const users: UserProfile[] = [];
         snapshot.forEach(docSnap => {
           const u = docSnap.data() as UserProfile;
@@ -230,9 +270,11 @@ export default function App() {
         });
         setNetworkUsers(users);
       });
+      return () => unsubNetwork();
     }
   }, [accessStatus, user]);
 
+  // Admin Setup
   useEffect(() => {
     if (activeModal === 'admin' && (user?.uid === ADMIN_UID || userProfile?.role === 'Admin')) {
       const qPending = query(collection(db, 'accessRequests'), where('status', '==', 'pending'));
@@ -242,6 +284,15 @@ export default function App() {
     }
   }, [activeModal, user, userProfile]);
 
+  // 1. ISOLATE EDIT FORM DATA ON MODAL OPEN
+  useEffect(() => {
+    if (activeModal === 'settings' && settingsTab === 'perfil' && userProfile) {
+      setEditFormData({ ...userProfile });
+    }
+  }, [activeModal, settingsTab, userProfile]);
+
+
+  // Auth Handlers
   const handleGoogleLogin = async () => {
     setAuthError('');
     try { await signInWithPopup(auth, new GoogleAuthProvider()); } 
@@ -277,6 +328,7 @@ export default function App() {
     } catch (err: any) { setAuthError('Erro ao submeter perfil.'); }
   };
 
+  // Post Actions
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPostText.trim() || !user) return;
@@ -302,11 +354,65 @@ export default function App() {
     }
   };
 
+  // 2. IMAGE COMPRESSION HANDLERS
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        showToast('Imagem demasiado grande. Máximo 2MB.');
+        return;
+      }
       const reader = new FileReader();
-      reader.onloadend = () => setNewPostImage(reader.result as string);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxWidth = 1200;
+          let width = img.width;
+          let height = img.height;
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          setNewPostImage(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.src = event.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, field: 'avatarUrl' | 'coverUrl') => {
+    const file = e.target.files?.[0];
+    if (file && editFormData) {
+      if (file.size > 2 * 1024 * 1024) {
+        showToast('Imagem demasiado grande. Máximo 2MB.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxWidth = 800;
+          let width = img.width;
+          let height = img.height;
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          setEditFormData({ ...editFormData, [field]: canvas.toDataURL('image/jpeg', 0.7) });
+        };
+        img.src = event.target?.result as string;
+      };
       reader.readAsDataURL(file);
     }
   };
@@ -349,32 +455,24 @@ export default function App() {
     }
   };
 
+  // 1. UPDATE PROFILE FROM EDIT FORMDATA ONLY
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !userProfile) return;
+    if (!user || !editFormData) return;
     try {
       await updateDoc(doc(db, 'accessRequests', user.uid), {
-        name: userProfile.name,
-        role: userProfile.role,
-        location: userProfile.location,
-        pitch: userProfile.pitch,
-        lookingFor: userProfile.lookingFor,
-        linkedinUrl: userProfile.linkedinUrl || '',
-        avatarUrl: userProfile.avatarUrl || '',
-        coverUrl: userProfile.coverUrl || ''
+        name: editFormData.name,
+        role: editFormData.role,
+        location: editFormData.location,
+        pitch: editFormData.pitch,
+        lookingFor: editFormData.lookingFor,
+        linkedinUrl: editFormData.linkedinUrl || '',
+        avatarUrl: editFormData.avatarUrl || '',
+        coverUrl: editFormData.coverUrl || ''
       });
       setActiveModal('none');
       showToast('Perfil atualizado com sucesso!');
     } catch (err) { showToast('Erro ao atualizar perfil.'); }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, field: 'avatarUrl' | 'coverUrl') => {
-    const file = e.target.files?.[0];
-    if (file && userProfile) {
-      const reader = new FileReader();
-      reader.onloadend = () => setUserProfile({ ...userProfile, [field]: reader.result as string });
-      reader.readAsDataURL(file);
-    }
   };
 
   const handleUpdateEmail = async () => {
@@ -767,7 +865,7 @@ export default function App() {
                     <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
                     <ImageIcon size={20} className="text-gray-500" />
                   </label>
-                  {newPostImage && <span className="text-xs text-gray-500">Imagem anexada</span>}
+                  {newPostImage && <span className="text-xs text-gray-500">Imagem anexada pronta a publicar.</span>}
                 </div>
                 <div className="flex justify-end gap-3 pt-2">
                   <button type="button" onClick={() => setActiveModal('none')} className="px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs">Cancelar</button>
@@ -847,7 +945,7 @@ export default function App() {
                 </div>
               )}
 
-              {settingsTab === 'perfil' && (
+              {settingsTab === 'perfil' && editFormData && (
                 <form onSubmit={handleUpdateProfile} className="space-y-4 text-sm py-2">
                   <div className="grid grid-cols-2 gap-4 pb-2 border-b border-gray-100 dark:border-gray-900">
                     <div className="space-y-2">
@@ -860,14 +958,14 @@ export default function App() {
                     </div>
                   </div>
                   
-                  <input type="text" placeholder="Nome" value={userProfile.name} onChange={e => setUserProfile({ ...userProfile, name: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <input type="text" placeholder="Nome" value={editFormData.name} onChange={e => setEditFormData({ ...editFormData, name: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
                   <div className="grid grid-cols-2 gap-4">
-                    <input type="text" placeholder="Cargo" value={userProfile.role} onChange={e => setUserProfile({ ...userProfile, role: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                    <input type="text" placeholder="Localização" value={userProfile.location} onChange={e => setUserProfile({ ...userProfile, location: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                    <input type="text" placeholder="Cargo" value={editFormData.role} onChange={e => setEditFormData({ ...editFormData, role: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                    <input type="text" placeholder="Localização" value={editFormData.location} onChange={e => setEditFormData({ ...editFormData, location: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
                   </div>
-                  <input type="url" placeholder="URL do LinkedIn" value={userProfile.linkedinUrl || ''} onChange={e => setUserProfile({ ...userProfile, linkedinUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                  <textarea placeholder="O teu Pitch curto" value={userProfile.pitch} onChange={e => setUserProfile({ ...userProfile, pitch: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
-                  <textarea placeholder="O que procuras no Elo?" value={userProfile.lookingFor || ''} onChange={e => setUserProfile({ ...userProfile, lookingFor: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <input type="url" placeholder="URL do LinkedIn" value={editFormData.linkedinUrl || ''} onChange={e => setEditFormData({ ...editFormData, linkedinUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <textarea placeholder="O teu Pitch curto" value={editFormData.pitch} onChange={e => setEditFormData({ ...editFormData, pitch: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
+                  <textarea placeholder="O que procuras no Elo?" value={editFormData.lookingFor || ''} onChange={e => setEditFormData({ ...editFormData, lookingFor: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
                   
                   <div className="pt-2">
                     <button type="submit" className="w-full py-3 bg-black text-white dark:bg-white dark:text-black rounded-xl font-medium">Guardar Alterações</button>
@@ -1006,5 +1104,14 @@ export default function App() {
         </div>
       </div>
     </div>
+  );
+}
+
+// 4. EXPORT COM ERROR BOUNDARY WRAPPER
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <MainApp />
+    </ErrorBoundary>
   );
 }
