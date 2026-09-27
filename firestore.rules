@@ -24,6 +24,12 @@ service cloud.firestore {
         : secondUid + '_' + firstUid;
     }
 
+    function safeHttpsOrEmpty(value) {
+      return value is string
+        && value.size() <= 2048
+        && (value == '' || value.matches('https://.+'));
+    }
+
     function validPublicProfile(uid) {
       return request.resource.data.uid == uid
         && request.resource.data.status == 'approved'
@@ -35,10 +41,18 @@ service cloud.firestore {
         && request.resource.data.name is string
         && request.resource.data.name.size() <= 100
         && request.resource.data.role is string
+        && request.resource.data.role.size() <= 160
+        && request.resource.data.company is string
+        && request.resource.data.company.size() <= 160
         && request.resource.data.location is string
+        && request.resource.data.location.size() <= 160
         && request.resource.data.pitch is string
         && request.resource.data.pitch.size() <= 1000
         && request.resource.data.lookingFor is string
+        && request.resource.data.lookingFor.size() <= 1000
+        && safeHttpsOrEmpty(request.resource.data.avatarUrl)
+        && safeHttpsOrEmpty(request.resource.data.coverUrl)
+        && safeHttpsOrEmpty(request.resource.data.linkedinUrl)
         && request.resource.data.visibleInNetwork is bool
         && request.resource.data.acceptsMeetings is bool;
     }
@@ -67,7 +81,8 @@ service cloud.firestore {
         && data.content.size() > 0
         && data.content.size() <= 500
         && data.likes is list
-        && data.comments is list;
+        && data.comments is list
+        && safeHttpsOrEmpty(data.get('imageUrl', ''));
     }
 
     function validLikeChange() {
@@ -300,9 +315,10 @@ service cloud.firestore {
       allow update: if isApprovedMember()
         && ((resource.data.authorUid == request.auth.uid
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['content', 'imageUrl', 'updatedAt'])
-            && request.resource.data.content is string
-            && request.resource.data.content.size() > 0
-            && request.resource.data.content.size() <= 500)
+          && request.resource.data.content is string
+          && request.resource.data.content.size() > 0
+          && request.resource.data.content.size() <= 500
+          && safeHttpsOrEmpty(request.resource.data.get('imageUrl', '')))
           || validLikeChange()
           || validCommentChange());
       allow delete: if isApprovedMember() && resource.data.authorUid == request.auth.uid;

@@ -32,10 +32,9 @@ import {
   getCountFromServer,
   writeBatch
 } from 'firebase/firestore';
-import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Camera, Palette, Shield, Pencil, Calendar, MapPin, ExternalLink, Plus } from 'lucide-react';
+import { ThumbsUp, MessageCircle, Share2, Link2, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Palette, Shield, Pencil, Calendar, MapPin, ExternalLink, Plus } from 'lucide-react';
 import logo from './logo.png';
-import { getDownloadURL, ref, uploadString } from 'firebase/storage';
-import { auth, db, storage } from './firebase';
+import { auth, db } from './firebase';
 import {
   cancelOrDisconnectConnection,
   connectionIdFor,
@@ -44,26 +43,7 @@ import {
   watchConnections,
   type NetworkConnection,
 } from './network';
-
-type AccessStatus = 'none' | 'pending' | 'approved' | 'rejected';
-
-interface UserProfile {
-  uid: string;
-  email: string;
-  name: string;
-  location: string;
-  role: string;
-  company: string;
-  pitch: string;
-  lookingFor: string;
-  avatarUrl?: string;
-  coverUrl?: string;
-  linkedinUrl?: string;
-  visibleInNetwork?: boolean;
-  acceptsMeetings?: boolean;
-  status: AccessStatus;
-  createdAt?: any;
-}
+import { isOptionalHttpsUrl, normalizeProfile, type AccessStatus, type UserProfile } from './profile';
 
 interface Post {
   id: string;
@@ -242,14 +222,6 @@ function MainApp() {
     e.currentTarget.style.display = 'none';
   };
 
-  const persistImage = async (path: string, value: string | null | undefined) => {
-    if (!value) return null;
-    if (!value.startsWith('data:image/')) return value;
-    const imageRef = ref(storage, path);
-    await uploadString(imageRef, value, 'data_url');
-    return getDownloadURL(imageRef);
-  };
-
   useEffect(() => {
     document.title = "Elo — Rede de Fundadores";
     let metaDesc = document.querySelector('meta[name="description"]');
@@ -285,7 +257,7 @@ function MainApp() {
         unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
           if (requestId !== authChangeId) return;
           if (docSnap.exists()) {
-            const data = docSnap.data() as UserProfile;
+            const data = normalizeProfile(currentUser.uid, docSnap.data());
             setUserProfile(data);
             setAccessStatus(data.status);
             setVisibleInNetwork(data.visibleInNetwork !== false);
@@ -370,7 +342,7 @@ function MainApp() {
       const unsubNetwork = onSnapshot(q, snapshot => {
         const users: UserProfile[] = [];
         snapshot.forEach(docSnap => {
-          const u = docSnap.data() as UserProfile;
+          const u = normalizeProfile(docSnap.id, docSnap.data());
           if (u.uid !== user?.uid) users.push(u);
         });
         setNetworkUsers(users);
@@ -464,9 +436,9 @@ function MainApp() {
   useEffect(() => {
     if (activeModal === 'admin' && isAdmin) {
       const qPending = query(collection(db, 'accessRequests'), where('status', '==', 'pending'));
-      getDocs(qPending).then(snap => setPendingRequests(snap.docs.map(d => d.data() as UserProfile)));
+      getDocs(qPending).then(snap => setPendingRequests(snap.docs.map(d => normalizeProfile(d.id, d.data()))));
       const qApproved = query(collection(db, 'accessRequests'), where('status', '==', 'approved'));
-      getDocs(qApproved).then(snap => setApprovedMembers(snap.docs.map(d => d.data() as UserProfile)));
+      getDocs(qApproved).then(snap => setApprovedMembers(snap.docs.map(d => normalizeProfile(d.id, d.data()))));
     }
   }, [activeModal, isAdmin]);
 
@@ -531,6 +503,7 @@ function MainApp() {
     try {
       const payload: UserProfile = {
         uid: user.uid, email: user.email || '', ...onboardingData, status: 'pending',
+        avatarUrl: '', coverUrl: '', linkedinUrl: '',
         visibleInNetwork: true, acceptsMeetings: true, createdAt: serverTimestamp()
       };
       await setDoc(doc(db, 'accessRequests', user.uid), payload);
@@ -540,9 +513,13 @@ function MainApp() {
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPostText.trim() || !user) return;
+    const imageUrl = newPostImage?.trim() || '';
+    if (!isOptionalHttpsUrl(imageUrl)) {
+      showToast('Usa um link HTTPS válido para a imagem.');
+      return;
+    }
     try {
       const postRef = editingPostId ? doc(db, 'posts', editingPostId) : doc(collection(db, 'posts'));
-      const imageUrl = await persistImage(`members/${user.uid}/posts/${postRef.id}.jpg`, newPostImage);
       const postData = {
         content: newPostText.trim(),
         imageUrl,
@@ -668,62 +645,6 @@ function MainApp() {
       showToast('Evento criado com sucesso!');
     } catch (err) {
       showToast('Erro ao criar evento.');
-    }
-  };
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 2 * 1024 * 1024) { showToast('Imagem demasiado grande. Máximo 2MB.'); return; }
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxWidth = 1200;
-          let width = img.width;
-          let height = img.height;
-          if (width > maxWidth) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          }
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
-          setNewPostImage(canvas.toDataURL('image/jpeg', 0.7));
-        };
-        img.src = event.target?.result as string;
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, field: 'avatarUrl' | 'coverUrl') => {
-    const file = e.target.files?.[0];
-    if (file && editFormData) {
-      if (file.size > 2 * 1024 * 1024) { showToast('Imagem demasiado grande. Máximo 2MB.'); return; }
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxWidth = 800;
-          let width = img.width;
-          let height = img.height;
-          if (width > maxWidth) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          }
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
-          setEditFormData({ ...editFormData, [field]: canvas.toDataURL('image/jpeg', 0.7) });
-        };
-        img.src = event.target?.result as string;
-      };
-      reader.readAsDataURL(file);
     }
   };
 
@@ -884,9 +805,14 @@ function MainApp() {
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user || !editFormData) return;
+    const avatarUrl = (editFormData.avatarUrl || '').trim();
+    const coverUrl = (editFormData.coverUrl || '').trim();
+    const linkedinUrl = (editFormData.linkedinUrl || '').trim();
+    if (![avatarUrl, coverUrl, linkedinUrl].every(isOptionalHttpsUrl)) {
+      showToast('Usa links HTTPS válidos para as imagens e o LinkedIn.');
+      return;
+    }
     try {
-      const avatarUrl = await persistImage(`members/${user.uid}/profile/avatar.jpg`, editFormData.avatarUrl);
-      const coverUrl = await persistImage(`members/${user.uid}/profile/cover.jpg`, editFormData.coverUrl);
       const profileChanges = {
         name: editFormData.name,
         role: editFormData.role,
@@ -894,9 +820,9 @@ function MainApp() {
         company: editFormData.company || '',
         pitch: editFormData.pitch,
         lookingFor: editFormData.lookingFor,
-        linkedinUrl: editFormData.linkedinUrl || '',
-        avatarUrl: avatarUrl || '',
-        coverUrl: coverUrl || '',
+        linkedinUrl,
+        avatarUrl,
+        coverUrl,
       };
       const batch = writeBatch(db);
       batch.update(doc(db, 'accessRequests', user.uid), profileChanges);
@@ -1636,12 +1562,11 @@ function MainApp() {
                   <textarea maxLength={500} placeholder="O que queres partilhar com a rede?" value={newPostText} onChange={e => setNewPostText(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-4 rounded-xl text-sm h-32 focus:outline-none focus:border-black dark:focus:border-white" />
                   <div className="text-right text-[10px] text-gray-400">{newPostText.length}/500</div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <label className="cursor-pointer border border-gray-200 dark:border-gray-800 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors focus-within:ring-2 focus-within:ring-black dark:focus-within:ring-white">
-                    <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                    <ImageIcon size={20} className="text-gray-500" />
-                  </label>
-                  {newPostImage && <span className="text-xs text-gray-500">Imagem anexada pronta a publicar.</span>}
+                <div className="space-y-2">
+                  <label htmlFor="post-image-url" className="text-xs font-medium flex items-center gap-2"><Link2 size={14} /> Link da imagem (opcional)</label>
+                  <input id="post-image-url" type="url" inputMode="url" placeholder="https://..." value={newPostImage || ''} onChange={e => setNewPostImage(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl text-sm focus:outline-none focus:border-black dark:focus:border-white" />
+                  <p className="text-[10px] text-gray-400">A imagem tem de estar online e usar HTTPS. Upload direto não está disponível no plano gratuito.</p>
+                  {newPostImage && <img src={newPostImage} alt="Pré-visualização" onError={handleImageError} className="max-h-48 rounded-xl object-cover border border-gray-200 dark:border-gray-800" />}
                 </div>
                 <div className="flex justify-end gap-3 pt-2">
                   <button type="button" onClick={() => { setActiveModal('none'); setEditingPostId(null); setNewPostText(''); setNewPostImage(null); }} className={`px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs ${btnFocus}`}>Cancelar</button>
@@ -1803,22 +1728,24 @@ function MainApp() {
                 {settingsTab === 'perfil' && (
                   <form onSubmit={handleUpdateProfile} className="space-y-8 text-sm">
                     
-                    <div className="space-y-4 relative">
-                      <div className="h-32 bg-gray-100 dark:bg-gray-800 rounded-xl relative group overflow-hidden border border-gray-200 dark:border-gray-700">
-                        {editFormData.coverUrl && <img src={editFormData.coverUrl} className="w-full h-full object-cover" alt="Cover" />}
-                        <label className="absolute inset-0 bg-black/40 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
-                          <span className="text-xs font-semibold flex items-center gap-2"><Camera size={16}/> Alterar capa</span>
-                          <input type="file" accept="image/*" onChange={e => handleFileChange(e, 'coverUrl')} className="hidden" />
-                        </label>
+                    <div className="space-y-4">
+                      <div className="h-32 bg-gray-100 dark:bg-gray-800 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700">
+                        {editFormData.coverUrl && <img src={editFormData.coverUrl} className="w-full h-full object-cover" alt="Pré-visualização da capa" onError={handleImageError} />}
                       </div>
-                      <div className="w-20 h-20 bg-gray-200 dark:bg-gray-700 rounded-full border-4 border-white dark:border-black absolute -bottom-6 left-6 flex items-center justify-center font-bold text-xl uppercase overflow-hidden relative group">
-                        <span className="absolute z-0">{editFormData.name.charAt(0)}</span>
-                        {editFormData.avatarUrl && <img src={editFormData.avatarUrl} className="w-full h-full object-cover relative z-10" alt="Avatar" />}
-                        <label className="absolute inset-0 bg-black/40 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer z-20">
-                          <Camera size={20} />
-                          <input type="file" accept="image/*" onChange={e => handleFileChange(e, 'avatarUrl')} className="hidden" />
-                        </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                        <div className="flex items-center gap-3">
+                          <div className="w-16 h-16 bg-gray-200 dark:bg-gray-700 rounded-full border-2 border-white dark:border-black flex items-center justify-center font-bold text-xl uppercase overflow-hidden shrink-0">
+                            <span>{editFormData.name.charAt(0)}</span>
+                            {editFormData.avatarUrl && <img src={editFormData.avatarUrl} className="w-full h-full object-cover" alt="Pré-visualização do perfil" onError={handleImageError} />}
+                          </div>
+                          <span className="text-xs text-gray-500">Pré-visualização</span>
+                        </div>
+                        <div className="space-y-3">
+                          <input aria-label="Link HTTPS da imagem de capa" type="url" inputMode="url" placeholder="Link HTTPS da imagem de capa" value={editFormData.coverUrl || ''} onChange={e => setEditFormData({ ...editFormData, coverUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                          <input aria-label="Link HTTPS da imagem de perfil" type="url" inputMode="url" placeholder="Link HTTPS da imagem de perfil" value={editFormData.avatarUrl || ''} onChange={e => setEditFormData({ ...editFormData, avatarUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                        </div>
                       </div>
+                      <p className="text-[10px] text-gray-400">Cola links HTTPS de imagens que já estejam online. O Elo não faz upload de ficheiros neste plano gratuito.</p>
                     </div>
 
                     <div className="pt-6 space-y-4">

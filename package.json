@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
-    "test:rules": "firebase emulators:exec --project demo-elo-phase-1 --only firestore,storage \"npm run test:rules:run\"",
-    "test:rules:run": "vitest run tests/firestore.rules.test.ts",
+    "test:rules": "firebase emulators:exec --project demo-elo-phase-1 --only firestore \"npm run test:rules:run\"",
+    "test:rules:run": "vitest run",
     "admin:claim": "node scripts/set-admin-claim.mjs",
     "admin:backfill-profiles": "node scripts/backfill-public-profiles.mjs",
     "preview": "vite preview"

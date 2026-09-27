@@ -246,25 +246,39 @@ describe('Firestore rules', () => {
     await assertFails(updateDoc(post, { content: 'Modified by Bob' }));
   });
 
-  it('restricts profile-media uploads to their owner and reads to approved members', async () => {
+  it('allows safe HTTPS profile links but rejects data URLs and insecure HTTP links', async () => {
     await seedApprovedMember('alice', 'Alice');
-    await seedApprovedMember('bob', 'Bob');
-    await testEnv.withSecurityRulesDisabled(async (context) => {
-      await setDoc(doc(context.firestore(), 'accessRequests/pending'), {
-        ...baseProfile('pending', 'Pending Member'), status: 'pending',
-      });
-    });
+    const db = testEnv.authenticatedContext('alice', { email: 'alice@elo.test' }).firestore();
+    const privateRef = doc(db, 'accessRequests/alice');
+    const publicRef = doc(db, 'profiles/alice');
 
-    const bucket = 'gs://demo-elo-phase-1.appspot.com';
-    const aliceStorage = testEnv.authenticatedContext('alice', { email: 'alice@elo.test' }).storage(bucket);
-    const bobStorage = testEnv.authenticatedContext('bob', { email: 'bob@elo.test' }).storage(bucket);
-    const pendingStorage = testEnv.authenticatedContext('pending', { email: 'pending@elo.test' }).storage(bucket);
-    const objectPath = 'members/alice/profile/avatar.jpg';
-    const image = 'data:image/jpeg;base64,AA==';
+    const unsafeBatch = writeBatch(db);
+    unsafeBatch.update(privateRef, { avatarUrl: 'data:image/png;base64,AAA' });
+    unsafeBatch.set(publicRef, { avatarUrl: 'data:image/png;base64,AAA' }, { merge: true });
+    await assertFails(unsafeBatch.commit());
 
-    await assertSucceeds(aliceStorage.ref(objectPath).putString(image, 'data_url'));
-    await assertSucceeds(bobStorage.ref(objectPath).getDownloadURL());
-    await assertFails(bobStorage.ref(objectPath).putString(image, 'data_url'));
-    await assertFails(pendingStorage.ref(objectPath).getDownloadURL());
+    const safeBatch = writeBatch(db);
+    safeBatch.update(privateRef, { avatarUrl: 'https://images.example/alice.jpg' });
+    safeBatch.set(publicRef, { avatarUrl: 'https://images.example/alice.jpg' }, { merge: true });
+    await assertSucceeds(safeBatch.commit());
+  });
+
+  it('requires HTTPS when a member adds an image link to a post', async () => {
+    await seedApprovedMember('alice', 'Alice');
+    const db = testEnv.authenticatedContext('alice', { email: 'alice@elo.test' }).firestore();
+    const postData = {
+      authorUid: 'alice', authorName: 'Alice', authorRole: 'Founder', content: 'Hello',
+      likes: [], comments: [], createdAt: new Date(),
+    };
+
+    await assertFails(setDoc(doc(db, 'posts/http-image'), {
+      ...postData, imageUrl: 'http://images.example/photo.jpg',
+    }));
+    await assertFails(setDoc(doc(db, 'posts/data-image'), {
+      ...postData, imageUrl: 'data:image/jpeg;base64,AA==',
+    }));
+    await assertSucceeds(setDoc(doc(db, 'posts/https-image'), {
+      ...postData, imageUrl: 'https://images.example/photo.jpg',
+    }));
   });
 });
