@@ -33,7 +33,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { ThumbsUp, MessageCircle, Share2, ImagePlus, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Palette, Shield, Calendar, MapPin, ExternalLink, Plus, Sun, Moon } from 'lucide-react';
-import logo from './logo-clean.png';
+import logo from './logo-mark.png';
 import { auth, db } from './firebase';
 import ProfileEditorModal from './ProfileEditorModal';
 import { compressLocalImage, type ImagePurpose } from './image';
