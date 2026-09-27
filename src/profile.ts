@@ -18,6 +18,14 @@ export interface UserProfile {
   createdAt?: unknown;
 }
 
+export const IMAGE_DATA_URL_LIMITS = {
+  avatar: 110_000,
+  cover: 380_000,
+  post: 380_000,
+} as const;
+
+const JPEG_DATA_URL_PATTERN = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/;
+
 function text(value: unknown): string {
   if (typeof value === 'string') return value.trim();
   if (Array.isArray(value)) {
@@ -40,9 +48,9 @@ function currentOrLegacy(raw: Record<string, unknown>, currentKey: string, legac
   return typeof raw[currentKey] === 'string' ? text(raw[currentKey]) : text(raw[legacyKey]);
 }
 
-function safeHttpsUrl(value: unknown): string {
+function safeImageSource(value: unknown, inlineLimit: number): string {
   const candidate = text(value);
-  return isOptionalHttpsUrl(candidate) ? candidate : '';
+  return isOptionalImageSource(candidate, inlineLimit) ? candidate : '';
 }
 
 export function isOptionalHttpsUrl(value: string): boolean {
@@ -55,6 +63,14 @@ export function isOptionalHttpsUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Accepts legacy HTTPS images or a compact JPEG produced from a local file. */
+export function isOptionalImageSource(value: string, maxInlineLength: number): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (isOptionalHttpsUrl(trimmed)) return true;
+  return trimmed.length <= maxInlineLength && JPEG_DATA_URL_PATTERN.test(trimmed);
 }
 
 export function normalizeProfile(uid: string, raw: Record<string, unknown>): UserProfile {
@@ -72,9 +88,12 @@ export function normalizeProfile(uid: string, raw: Record<string, unknown>): Use
     company: text(raw.company),
     pitch: currentOrLegacy(raw, 'pitch', 'about'),
     lookingFor: text(raw.lookingFor),
-    avatarUrl: safeHttpsUrl(currentOrLegacy(raw, 'avatarUrl', 'avatar')),
-    coverUrl: safeHttpsUrl(currentOrLegacy(raw, 'coverUrl', 'cover')),
-    linkedinUrl: safeHttpsUrl(raw.linkedinUrl),
+    avatarUrl: safeImageSource(currentOrLegacy(raw, 'avatarUrl', 'avatar'), IMAGE_DATA_URL_LIMITS.avatar),
+    coverUrl: safeImageSource(currentOrLegacy(raw, 'coverUrl', 'cover'), IMAGE_DATA_URL_LIMITS.cover),
+    linkedinUrl: (() => {
+      const link = text(raw.linkedinUrl);
+      return isOptionalHttpsUrl(link) ? link : '';
+    })(),
     visibleInNetwork: typeof raw.visibleInNetwork === 'boolean' ? raw.visibleInNetwork : true,
     acceptsMeetings: typeof raw.acceptsMeetings === 'boolean' ? raw.acceptsMeetings : true,
     status,

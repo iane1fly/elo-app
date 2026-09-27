@@ -30,6 +30,35 @@ service cloud.firestore {
         && (value == '' || value.matches('https://.+'));
     }
 
+    function safeImageSource(value, maxInlineLength) {
+      return value is string
+        && (value == ''
+          || (value.size() <= 2048 && value.matches('https://.+'))
+          || (value.size() <= maxInlineLength
+            && value.matches('data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}')));
+    }
+
+    function validProfileDetails(data) {
+      return data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 100
+        && data.role is string
+        && data.role.size() <= 160
+        && data.company is string
+        && data.company.size() <= 160
+        && data.location is string
+        && data.location.size() <= 160
+        && data.pitch is string
+        && data.pitch.size() <= 1000
+        && data.lookingFor is string
+        && data.lookingFor.size() <= 1000
+        && safeImageSource(data.avatarUrl, 110000)
+        && safeImageSource(data.coverUrl, 380000)
+        && safeHttpsOrEmpty(data.linkedinUrl)
+        && data.visibleInNetwork is bool
+        && data.acceptsMeetings is bool;
+    }
+
     function validPublicProfile(uid) {
       return request.resource.data.uid == uid
         && request.resource.data.status == 'approved'
@@ -38,23 +67,7 @@ service cloud.firestore {
           'avatarUrl', 'coverUrl', 'linkedinUrl', 'visibleInNetwork',
           'acceptsMeetings', 'status', 'createdAt', 'updatedAt'
         ])
-        && request.resource.data.name is string
-        && request.resource.data.name.size() <= 100
-        && request.resource.data.role is string
-        && request.resource.data.role.size() <= 160
-        && request.resource.data.company is string
-        && request.resource.data.company.size() <= 160
-        && request.resource.data.location is string
-        && request.resource.data.location.size() <= 160
-        && request.resource.data.pitch is string
-        && request.resource.data.pitch.size() <= 1000
-        && request.resource.data.lookingFor is string
-        && request.resource.data.lookingFor.size() <= 1000
-        && safeHttpsOrEmpty(request.resource.data.avatarUrl)
-        && safeHttpsOrEmpty(request.resource.data.coverUrl)
-        && safeHttpsOrEmpty(request.resource.data.linkedinUrl)
-        && request.resource.data.visibleInNetwork is bool
-        && request.resource.data.acceptsMeetings is bool;
+        && validProfileDetails(request.resource.data);
     }
 
     function profileMatchesApplication(uid) {
@@ -82,7 +95,7 @@ service cloud.firestore {
         && data.content.size() <= 500
         && data.likes is list
         && data.comments is list
-        && safeHttpsOrEmpty(data.get('imageUrl', ''));
+        && safeImageSource(data.get('imageUrl', ''), 380000);
     }
 
     function validLikeChange() {
@@ -124,14 +137,16 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.uid == uid
-        && request.resource.data.status == 'pending'
+        && request.resource.data.status == 'approved'
         && request.resource.data.email is string
         && request.resource.data.email.size() <= 320
         && request.resource.data.keys().hasOnly([
           'uid', 'email', 'name', 'location', 'role', 'company', 'pitch', 'lookingFor',
           'avatarUrl', 'coverUrl', 'linkedinUrl', 'visibleInNetwork', 'acceptsMeetings',
           'status', 'createdAt'
-        ]);
+        ])
+        && validProfileDetails(request.resource.data)
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.status == 'approved';
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
       allow update: if isAdmin()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
@@ -143,7 +158,10 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'email', 'name', 'location', 'role', 'company', 'pitch', 'lookingFor',
             'avatarUrl', 'coverUrl', 'linkedinUrl', 'visibleInNetwork', 'acceptsMeetings'
-          ]));
+          ])
+          && request.resource.data.email is string
+          && request.resource.data.email.size() <= 320
+          && validProfileDetails(request.resource.data));
       allow delete: if signedIn() && request.auth.uid == uid || isAdmin();
     }
 
@@ -154,7 +172,7 @@ service cloud.firestore {
         && resource.data.status == 'approved'
         && resource.data.visibleInNetwork == true;
       allow create: if isAdmin() && validPublicProfile(uid)
-        || (signedIn() && request.auth.uid == uid && approved(uid)
+        || (signedIn() && request.auth.uid == uid
           && validPublicProfile(uid) && profileMatchesApplication(uid));
       allow update: if isAdmin() && validPublicProfile(uid)
         || (signedIn() && request.auth.uid == uid && approved(uid)
@@ -318,7 +336,7 @@ service cloud.firestore {
           && request.resource.data.content is string
           && request.resource.data.content.size() > 0
           && request.resource.data.content.size() <= 500
-          && safeHttpsOrEmpty(request.resource.data.get('imageUrl', '')))
+          && safeImageSource(request.resource.data.get('imageUrl', ''), 380000))
           || validLikeChange()
           || validCommentChange());
       allow delete: if isApprovedMember() && resource.data.authorUid == request.auth.uid;

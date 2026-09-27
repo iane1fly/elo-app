@@ -1,23 +1,24 @@
-# Elo — Phase 1 professional network
+# Elo — professional network
 
-Elo is a React, TypeScript, Vite and Firebase professional-network app. Phase 1 adds persistent connection requests, an approved-member directory, notifications, and direct messages limited to accepted connections. It is a solid early professional network, not a complete LinkedIn replacement: jobs, company pages, groups, email/push notifications, reporting/blocking, and production-grade account cleanup remain future work.
+Elo is a React, TypeScript, Vite, and Firebase professional-network app. It includes a member directory, connection requests, notifications, direct messages restricted to accepted connections, and a feed. It is an early professional-network product, not a complete LinkedIn replacement: jobs, company pages, groups, email/push notifications, reporting/blocking, and production-grade account cleanup remain future work.
 
-## What works in this phase
+## What works
 
-- Email/password, Google and GitHub sign-in.
-- Member applications and approval, with admin access controlled by a Firebase custom claim rather than a client-side ID.
-- Private account/application records kept separate from public directory profiles.
-- Searchable public member profiles, persistent connection requests, accept/cancel/disconnect actions, and an in-app inbox.
+- Email/password, Google, and GitHub sign-in.
+- **Self-service registration:** a new signed-in member completes a short profile and is activated immediately. New members do not wait for manual administrator approval.
+- Older accounts still marked pending or rejected remain in the administrator workflow; this change does not silently promote those accounts.
+- Private account records are kept separate from public directory profiles.
+- Searchable public profiles, persistent connection requests, accept/cancel/disconnect actions, and an in-app inbox.
 - Direct-message writes are authorized only while a connection is accepted.
 - In-app connection and meeting-request notifications.
 - Feed posts, editing/deleting your own posts, likes, and comments.
-- Profile and post images are supplied as **public HTTPS image links**. File uploads are intentionally disabled so Elo does not require a paid Firebase Storage plan.
-- Firestore security rules and emulator tests for core access-control paths.
+- Profile and post images can be selected from the device as JPG, PNG, or WebP. The browser reduces them to compact JPEGs before saving them inside Firestore; no Firebase Storage bucket or new paid service is required.
+- Firestore security rules and emulator tests cover account creation, profile privacy, connection and messaging permissions, and image-size limits.
 
 ## Local setup and checks
 
 1. In Firebase Authentication, enable Email/Password, Google, and GitHub. Complete each provider’s OAuth configuration.
-2. Create a Firestore database. Firebase Storage is not needed for this free-plan version.
+2. Create a Firestore database. Firebase Storage is not used by this free-plan implementation.
 3. Copy `.env.example` to `.env.local` and add the web app’s Firebase configuration from Project Settings.
 4. Install, test, and build:
 
@@ -30,7 +31,7 @@ Elo is a React, TypeScript, Vite and Firebase professional-network app. Phase 1 
 
 ## Existing members and production setup
 
-The current Firebase project has older private profile records. The migration script defaults to a **dry run**. It reports counts only, then—only with `--apply`—adds normalized profile fields to existing approved private records and creates sanitized public profiles. It does not log member data; public documents contain only an explicit allowlist and never include email, subscription, or founder/admin flags.
+The profile migration script defaults to a **dry run**. It reports counts only, then—only with `--apply`—adds normalized profile fields to existing approved private records and creates sanitized public profiles. It does not log member data; public documents contain only an explicit allowlist and never include email, subscription, or founder/admin flags.
 
 ```bash
 FIREBASE_PROJECT_ID=YOUR_FIREBASE_PROJECT_ID npm run admin:backfill-profiles
@@ -39,15 +40,15 @@ FIREBASE_PROJECT_ID=YOUR_FIREBASE_PROJECT_ID npm run admin:backfill-profiles -- 
 
 Admin operations use Application Default Credentials or another trusted Admin SDK credential. Never commit a service-account key.
 
-The Firestore rules and indexes are deployed separately from the Vercel app:
+**Production note:** Vercel deployment and Firebase security-rule deployment are separate. New account registration will not work on production until the Firestore rules from this code version are deployed to the intended Firebase project. Confirm the Firebase project before running:
 
 ```bash
 npx firebase-tools deploy --only firestore:rules,firestore:indexes --project YOUR_FIREBASE_PROJECT_ID
 ```
 
-Review and confirm the selected Firebase project and production rules before applying them. The new rules protect private applications, gate feed/network data to approved members, require atomic connection/notification changes, and restrict messages to accepted connections.
+The rules deliberately allow any authenticated user to create their own active account and matching public profile in one atomic operation; only an administrator can later change another member’s access. Existing members’ profiles and connection/message rules remain protected.
 
-Administrator powers use the Auth custom claim `admin: true`. The repository includes a one-time utility, but granting the claim changes account permissions and should be done only after confirming the exact account:
+Administrator powers use the Auth custom claim `admin: true`. Granting the claim changes account permissions and should be done only after confirming the exact account:
 
 ```bash
 FIREBASE_PROJECT_ID=YOUR_FIREBASE_PROJECT_ID npm run admin:claim -- FIREBASE_AUTH_UID on
@@ -57,7 +58,8 @@ The administrator must sign out and back in for the new claim to appear. Use `of
 
 ## Known limits
 
+- Images are compressed on the device and embedded in Firestore records to avoid a paid Storage dependency. This is suitable for a small early community, but image-heavy feeds/directories create larger reads and documents; a growing network should move images to object storage or a dedicated image service.
 - Conversation history currently loads the latest 100 messages; pagination, read receipts, attachments, moderation/blocking, and push/email delivery are not implemented.
 - Notification preferences are stored in the current browser, not synchronized across devices.
-- Account deletion does not yet clean up historical posts, connection records, or images hosted by third-party links.
-- Configure authorized OAuth domains, Firebase App Check, monitoring, and backups before broad public launch.
+- Account deletion does not yet clean up historical posts or connection records.
+- Configure authorized OAuth domains, Firebase App Check, monitoring, backups, and abuse controls before a broad public launch.
