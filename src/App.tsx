@@ -32,7 +32,7 @@ import {
   arrayRemove,
   getCountFromServer
 } from 'firebase/firestore';
-import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Camera, Palette, Shield, Pencil, Calendar, MapPin, Linkedin, Plus } from 'lucide-react';
+import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Camera, Palette, Shield, Pencil, Calendar, MapPin, ExternalLink, Plus } from 'lucide-react';
 import logo from './logo.png';
 
 const ADMIN_UID = 'ADMIN_MASTER_UID_ELO';
@@ -1080,7 +1080,7 @@ function MainApp() {
                       {activeProfile.linkedinUrl && (
                         <div>
                           <a href={activeProfile.linkedinUrl} target="_blank" rel="noopener noreferrer" className={`inline-flex items-center gap-2 bg-gray-100 dark:bg-gray-900 px-4 py-2 rounded-full text-xs font-medium hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors ${btnFocus}`}>
-                            <Linkedin size={14} /> LinkedIn
+                            <ExternalLink size={14} /> LinkedIn
                           </a>
                         </div>
                       )}
