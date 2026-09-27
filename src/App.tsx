@@ -1,7 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { initializeApp } from 'firebase/app';
 import { 
-  getAuth, 
   onAuthStateChanged,
   signInWithPopup, 
   GoogleAuthProvider, 
@@ -12,10 +10,10 @@ import {
   updateEmail,
   updatePassword,
   deleteUser,
+  getIdTokenResult,
   User
 } from 'firebase/auth';
 import { 
-  getFirestore, 
   doc, 
   onSnapshot, 
   setDoc, 
@@ -28,27 +26,24 @@ import {
   serverTimestamp,
   addDoc,
   orderBy,
+  limit,
   arrayUnion,
   arrayRemove,
-  getCountFromServer
+  getCountFromServer,
+  writeBatch
 } from 'firebase/firestore';
 import { ThumbsUp, MessageCircle, Share2, Image as ImageIcon, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Camera, Palette, Shield, Pencil, Calendar, MapPin, ExternalLink, Plus } from 'lucide-react';
 import logo from './logo.png';
-
-const ADMIN_UID = 'ADMIN_MASTER_UID_ELO';
-
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+import { getDownloadURL, ref, uploadString } from 'firebase/storage';
+import { auth, db, storage } from './firebase';
+import {
+  cancelOrDisconnectConnection,
+  connectionIdFor,
+  respondToConnectionRequest,
+  sendConnectionRequest,
+  watchConnections,
+  type NetworkConnection,
+} from './network';
 
 type AccessStatus = 'none' | 'pending' | 'approved' | 'rejected';
 
@@ -81,15 +76,47 @@ interface Post {
   timestamp: string;
   createdAt?: any;
   likes: string[];
-  comments: { id: string; authorName: string; text: string; timestamp: string }[];
+  comments: { id: string; authorUid?: string; authorName: string; text: string; timestamp: string }[];
 }
 
 interface NotificationItem {
   id: string;
-  type: 'follow' | 'meeting' | 'like';
-  text: string;
-  timestamp: string;
+  recipientUid: string;
+  actorUid: string;
+  actorName: string;
+  connectionId?: string;
+  type: 'connection_request' | 'connection_accepted' | 'meeting_request';
+  createdAt?: any;
   read: boolean;
+  meetingId?: string;
+}
+
+interface MeetingRequest {
+  id: string;
+  requesterUid: string;
+  requesterName: string;
+  targetUid: string;
+  targetName: string;
+  message: string;
+  proposedDateTime: string;
+  status: 'pending' | 'accepted' | 'rejected';
+}
+
+interface Conversation {
+  id: string;
+  memberUids: string[];
+  memberNames: Record<string, string>;
+  lastMessage?: string;
+  lastMessageAt?: any;
+  updatedAt?: any;
+}
+
+interface ChatMessage {
+  id: string;
+  senderUid: string;
+  senderName: string;
+  text: string;
+  createdAt?: any;
 }
 
 interface EloEvent {
@@ -128,12 +155,13 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
 
 function MainApp() {
   const [user, setUser] = useState<User | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [accessStatus, setAccessStatus] = useState<AccessStatus>('none');
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [editFormData, setEditFormData] = useState<UserProfile | null>(null);
 
-  const [currentTab, setCurrentTab] = useState<'feed' | 'rede' | 'notificacoes' | 'perfil'>('feed');
+  const [currentTab, setCurrentTab] = useState<'feed' | 'rede' | 'mensagens' | 'notificacoes' | 'perfil'>('feed');
   const [activeModal, setActiveModal] = useState<'none' | 'settings' | 'planos' | 'ai' | 'admin' | 'createPost' | 'createMeeting' | 'createEvent'>('none');
   const [viewingProfileUid, setViewingProfileUid] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -164,19 +192,26 @@ function MainApp() {
   const [fetchingNetwork, setFetchingNetwork] = useState(true);
   const [networkUsers, setNetworkUsers] = useState<UserProfile[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [followingUids, setFollowingUids] = useState<string[]>([]);
+  const [connections, setConnections] = useState<NetworkConnection[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [conversationMessages, setConversationMessages] = useState<ChatMessage[]>([]);
+  const [messageInput, setMessageInput] = useState('');
+  const [messageSending, setMessageSending] = useState(false);
+  const [connectionBusyUid, setConnectionBusyUid] = useState<string | null>(null);
+  const [editingPostId, setEditingPostId] = useState<string | null>(null);
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
 
   const [events, setEvents] = useState<EloEvent[]>([]);
+  const [incomingMeetings, setIncomingMeetings] = useState<MeetingRequest[]>([]);
+  const [meetingBusyId, setMeetingBusyId] = useState<string | null>(null);
 
   const [meetingData, setMeetingData] = useState({ targetUid: '', date: '', time: '', message: '' });
   const [eventData, setEventData] = useState({ title: '', description: '', date: '', time: '', location: '', capacity: '' });
 
   const [activeProfilePostCount, setActiveProfilePostCount] = useState<number | null>(null);
 
-  const [notifications, setNotifications] = useState<NotificationItem[]>([
-    { id: 'n1', type: 'follow', text: 'Beatriz Costa começou a seguir o teu perfil.', timestamp: 'Há 10m', read: false },
-    { id: 'n2', type: 'meeting', text: 'Solicitação de reunião enviada por Diogo Melo.', timestamp: 'Há 1h', read: false }
-  ]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   const [aiMessages, setAiMessages] = useState<{ sender: 'user' | 'ai'; text: string }[]>([
     { sender: 'ai', text: 'Olá! Sou o assistente do Elo. Como posso ajudar com a tua rede ou perfil hoje?' }
@@ -190,7 +225,7 @@ function MainApp() {
   const [visibleInNetwork, setVisibleInNetwork] = useState(true);
   const [acceptsMeetings, setAcceptsMeetings] = useState(true);
 
-  const [notifFollowers, setNotifFollowers] = useState<boolean>(() => localStorage.getItem('elo_notif_followers') !== 'false');
+  const [notifConnections, setNotifConnections] = useState<boolean>(() => localStorage.getItem('elo_notif_connections') !== 'false' && localStorage.getItem('elo_notif_followers') !== 'false');
   const [notifMeetings, setNotifMeetings] = useState<boolean>(() => localStorage.getItem('elo_notif_meetings') !== 'false');
 
   const [pendingRequests, setPendingRequests] = useState<UserProfile[]>([]);
@@ -205,6 +240,14 @@ function MainApp() {
 
   const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
     e.currentTarget.style.display = 'none';
+  };
+
+  const persistImage = async (path: string, value: string | null | undefined) => {
+    if (!value) return null;
+    if (!value.startsWith('data:image/')) return value;
+    const imageRef = ref(storage, path);
+    await uploadString(imageRef, value, 'data_url');
+    return getDownloadURL(imageRef);
   };
 
   useEffect(() => {
@@ -226,12 +269,21 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
-    let unsubscribeSnapshot: () => void;
+    let unsubscribeSnapshot: (() => void) | undefined;
+    let authChangeId = 0;
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      const requestId = ++authChangeId;
+      unsubscribeSnapshot?.();
+      unsubscribeSnapshot = undefined;
       setUser(currentUser);
       if (currentUser) {
+        setLoading(true);
+        getIdTokenResult(currentUser)
+          .then((token) => { if (requestId === authChangeId) setIsAdmin(token.claims.admin === true); })
+          .catch(() => { if (requestId === authChangeId) setIsAdmin(false); });
         const docRef = doc(db, 'accessRequests', currentUser.uid);
         unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
+          if (requestId !== authChangeId) return;
           if (docSnap.exists()) {
             const data = docSnap.data() as UserProfile;
             setUserProfile(data);
@@ -244,18 +296,19 @@ function MainApp() {
           }
           setLoading(false);
         }, () => {
+          if (requestId !== authChangeId) return;
           showToast("Erro ao carregar dados. Tenta recarregar a página.");
           setLoading(false);
         });
       } else {
-        if (unsubscribeSnapshot) unsubscribeSnapshot();
         setAccessStatus('none');
         setUser(null);
+        setIsAdmin(false);
         setUserProfile(null);
         setLoading(false);
       }
     });
-    return () => { unsubscribeAuth(); if (unsubscribeSnapshot) unsubscribeSnapshot(); };
+    return () => { authChangeId += 1; unsubscribeAuth(); unsubscribeSnapshot?.(); };
   }, []);
 
   useEffect(() => {
@@ -270,11 +323,20 @@ function MainApp() {
 
   useEffect(() => {
     if (accessStatus === 'approved') {
-      const qPosts = query(collection(db, 'posts'), orderBy('createdAt', 'desc'));
+      setFetchingPosts(true);
+      const qPosts = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(50));
       const unsubPosts = onSnapshot(qPosts, snap => {
-        setPosts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Post)));
+        setPosts(snap.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            ...data,
+            likes: Array.isArray(data.likes) ? data.likes : [],
+            comments: Array.isArray(data.comments) ? data.comments : [],
+          } as Post;
+        }));
         setFetchingPosts(false);
-      }, () => showToast("Erro ao carregar dados. Tenta recarregar a página."));
+      }, () => { setFetchingPosts(false); showToast("Não foi possível carregar o feed."); });
 
       const qEvents = query(collection(db, 'events'), orderBy('date', 'asc'));
       const unsubEvents = onSnapshot(qEvents, snap => {
@@ -299,28 +361,114 @@ function MainApp() {
 
   useEffect(() => {
     if (accessStatus === 'approved') {
-      const q = query(collection(db, 'accessRequests'), where('status', '==', 'approved'));
+      setFetchingNetwork(true);
+      const q = query(
+        collection(db, 'profiles'),
+        where('status', '==', 'approved'),
+        where('visibleInNetwork', '==', true),
+      );
       const unsubNetwork = onSnapshot(q, snapshot => {
         const users: UserProfile[] = [];
         snapshot.forEach(docSnap => {
           const u = docSnap.data() as UserProfile;
-          if (u.uid !== user?.uid && u.visibleInNetwork !== false) users.push(u);
+          if (u.uid !== user?.uid) users.push(u);
         });
         setNetworkUsers(users);
         setFetchingNetwork(false);
-      }, () => showToast("Erro ao carregar dados. Tenta recarregar a página."));
+      }, () => { setFetchingNetwork(false); showToast("Não foi possível carregar a rede."); });
       return () => unsubNetwork();
     }
   }, [accessStatus, user]);
 
   useEffect(() => {
-    if (activeModal === 'admin' && user?.uid === ADMIN_UID) {
+    if (accessStatus !== 'approved' || !user) {
+      setConnections([]);
+      return;
+    }
+    return watchConnections(
+      user.uid,
+      setConnections,
+      () => showToast('Não foi possível carregar as ligações.'),
+    );
+  }, [accessStatus, user]);
+
+  useEffect(() => {
+    if (accessStatus !== 'approved' || !user) {
+      setConversations([]);
+      setActiveConversationId(null);
+      return;
+    }
+    const conversationsQuery = query(
+      collection(db, 'conversations'),
+      where('memberUids', 'array-contains', user.uid),
+      orderBy('updatedAt', 'desc'),
+      limit(50),
+    );
+    return onSnapshot(conversationsQuery, (snapshot) => {
+      setConversations(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as Conversation));
+    }, () => showToast('Não foi possível carregar as conversas.'));
+  }, [accessStatus, user]);
+
+  useEffect(() => {
+    if (accessStatus !== 'approved' || !user || !activeConversationId) {
+      setConversationMessages([]);
+      return;
+    }
+    const messagesQuery = query(
+      collection(db, 'conversations', activeConversationId, 'messages'),
+      orderBy('createdAt', 'asc'),
+      limit(100),
+    );
+    return onSnapshot(messagesQuery, (snapshot) => {
+      setConversationMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as ChatMessage));
+    }, () => showToast('Não foi possível carregar as mensagens.'));
+  }, [accessStatus, user, activeConversationId]);
+
+  useEffect(() => {
+    if (accessStatus !== 'approved' || !user) {
+      setNotifications([]);
+      return;
+    }
+    const notificationsQuery = query(
+      collection(db, 'notifications'),
+      where('recipientUid', '==', user.uid),
+      limit(40),
+    );
+    return onSnapshot(notificationsQuery, (snapshot) => {
+      const items = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as NotificationItem);
+      items.sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() ?? 0;
+        const bTime = b.createdAt?.toMillis?.() ?? 0;
+        return bTime - aTime;
+      });
+      setNotifications(items);
+    }, () => showToast('Não foi possível carregar as notificações.'));
+  }, [accessStatus, user]);
+
+  useEffect(() => {
+    if (accessStatus !== 'approved' || !user) {
+      setIncomingMeetings([]);
+      return;
+    }
+    const requestsQuery = query(
+      collection(db, 'meetings'),
+      where('targetUid', '==', user.uid),
+      where('status', '==', 'pending'),
+      limit(30),
+    );
+    return onSnapshot(requestsQuery, (snapshot) => {
+      setIncomingMeetings(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as MeetingRequest));
+    }, () => showToast('Não foi possível carregar os pedidos de reunião.'));
+  }, [accessStatus, user]);
+
+  useEffect(() => {
+    if (activeModal === 'admin' && isAdmin) {
       const qPending = query(collection(db, 'accessRequests'), where('status', '==', 'pending'));
       getDocs(qPending).then(snap => setPendingRequests(snap.docs.map(d => d.data() as UserProfile)));
       const qApproved = query(collection(db, 'accessRequests'), where('status', '==', 'approved'));
       getDocs(qApproved).then(snap => setApprovedMembers(snap.docs.map(d => d.data() as UserProfile)));
     }
-  }, [activeModal, user]);
+  }, [activeModal, isAdmin]);
 
   useEffect(() => {
     if (activeModal === 'settings' && settingsTab === 'perfil' && userProfile) {
@@ -393,24 +541,62 @@ function MainApp() {
     e.preventDefault();
     if (!newPostText.trim() || !user) return;
     try {
-      await addDoc(collection(db, 'posts'), {
-        authorUid: user.uid,
-        authorName: userProfile?.name || user.displayName || 'Utilizador',
-        authorRole: userProfile?.role || 'Membro Elo',
-        authorAvatar: userProfile?.avatarUrl || '',
-        content: newPostText,
-        imageUrl: newPostImage || null,
-        timestamp: new Date().toLocaleDateString('pt-PT', { hour: '2-digit', minute: '2-digit' }),
-        createdAt: serverTimestamp(),
-        likes: [],
-        comments: []
-      });
+      const postRef = editingPostId ? doc(db, 'posts', editingPostId) : doc(collection(db, 'posts'));
+      const imageUrl = await persistImage(`members/${user.uid}/posts/${postRef.id}.jpg`, newPostImage);
+      const postData = {
+        content: newPostText.trim(),
+        imageUrl,
+        updatedAt: serverTimestamp(),
+      };
+      if (editingPostId) {
+        await updateDoc(postRef, postData);
+      } else {
+        await setDoc(postRef, {
+          ...postData,
+          authorUid: user.uid,
+          authorName: userProfile?.name || user.displayName || 'Utilizador',
+          authorRole: userProfile?.role || 'Membro Elo',
+          authorAvatar: userProfile?.avatarUrl || '',
+          timestamp: new Date().toLocaleDateString('pt-PT', { hour: '2-digit', minute: '2-digit' }),
+          createdAt: serverTimestamp(),
+          likes: [],
+          comments: [],
+        });
+      }
       setNewPostText('');
       setNewPostImage(null);
+      setEditingPostId(null);
       setActiveModal('none');
-      showToast('Publicação criada com sucesso!');
+      showToast(editingPostId ? 'Publicação atualizada.' : 'Publicação criada com sucesso!');
     } catch (err) {
-      showToast('Erro ao criar publicação.');
+      showToast('Não foi possível guardar a publicação.');
+    }
+  };
+
+  const handleNewPost = () => {
+    setEditingPostId(null);
+    setNewPostText('');
+    setNewPostImage(null);
+    setActiveModal('createPost');
+  };
+
+  const handleEditPost = (post: Post) => {
+    setEditingPostId(post.id);
+    setNewPostText(post.content);
+    setNewPostImage(post.imageUrl || null);
+    setActiveModal('createPost');
+  };
+
+  const handleDeletePost = async (postId: string) => {
+    if (!window.confirm('Eliminar esta publicação? Esta ação não pode ser anulada.')) return;
+    setDeletingPostId(postId);
+    try {
+      await deleteDoc(doc(db, 'posts', postId));
+      showToast('Publicação eliminada.');
+    } catch {
+      showToast('Não foi possível eliminar a publicação.');
+    } finally {
+      setDeletingPostId(null);
     }
   };
 
@@ -418,9 +604,15 @@ function MainApp() {
     e.preventDefault();
     if (!user || !meetingData.targetUid || !meetingData.date || !meetingData.time) return;
     const targetUser = networkUsers.find(u => u.uid === meetingData.targetUid);
-    if (!targetUser) return;
+    if (!targetUser || targetUser.acceptsMeetings === false) {
+      showToast('Este membro não está a aceitar pedidos de reunião.');
+      return;
+    }
     try {
-      await addDoc(collection(db, 'meetings'), {
+      const meetingRef = doc(collection(db, 'meetings'));
+      const notificationRef = doc(collection(db, 'notifications'));
+      const batch = writeBatch(db);
+      batch.set(meetingRef, {
         requesterUid: user.uid,
         requesterName: userProfile?.name || 'Membro',
         targetUid: targetUser.uid,
@@ -430,6 +622,16 @@ function MainApp() {
         status: 'pending',
         createdAt: serverTimestamp()
       });
+      batch.set(notificationRef, {
+        recipientUid: targetUser.uid,
+        actorUid: user.uid,
+        actorName: userProfile?.name || 'Membro Elo',
+        meetingId: meetingRef.id,
+        type: 'meeting_request',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+      await batch.commit();
       setMeetingData({ targetUid: '', date: '', time: '', message: '' });
       setActiveModal('none');
       showToast('Reunião agendada com sucesso!');
@@ -438,9 +640,22 @@ function MainApp() {
     }
   };
 
+  const handleMeetingResponse = async (meeting: MeetingRequest, response: 'accepted' | 'rejected') => {
+    if (!user || user.uid !== meeting.targetUid || meetingBusyId) return;
+    setMeetingBusyId(meeting.id);
+    try {
+      await updateDoc(doc(db, 'meetings', meeting.id), { status: response, updatedAt: serverTimestamp() });
+      showToast(response === 'accepted' ? 'Pedido de reunião aceite.' : 'Pedido de reunião recusado.');
+    } catch {
+      showToast('Não foi possível atualizar o pedido de reunião.');
+    } finally {
+      setMeetingBusyId(null);
+    }
+  };
+
   const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || user.uid !== ADMIN_UID || !eventData.title || !eventData.date || !eventData.time || !eventData.location) return;
+    if (!user || !isAdmin || !eventData.title || !eventData.date || !eventData.time || !eventData.location) return;
     try {
       await addDoc(collection(db, 'events'), {
         ...eventData,
@@ -528,6 +743,7 @@ function MainApp() {
       await updateDoc(postRef, {
         comments: arrayUnion({
           id: Date.now().toString(),
+          authorUid: user.uid,
           authorName: userProfile?.name || 'Utilizador',
           text: commentInput,
           timestamp: new Date().toLocaleDateString('pt-PT', { hour: '2-digit', minute: '2-digit' })
@@ -542,14 +758,117 @@ function MainApp() {
     showToast('Link copiado para a área de transferência!');
   };
 
-  const toggleFollow = (targetUid: string) => {
-    if (followingUids.includes(targetUid)) {
-      setFollowingUids(followingUids.filter(id => id !== targetUid));
-      showToast('Deixaste de seguir este perfil.');
-    } else {
-      setFollowingUids([...followingUids, targetUid]);
-      showToast('A seguir perfil.');
+  const connectionFor = (targetUid: string) =>
+    connections.find((item) => item.memberUids?.includes(user?.uid || '') && item.memberUids?.includes(targetUid));
+
+  const handleConnectionRequest = async (targetUid: string) => {
+    if (!user || !userProfile || connectionBusyUid) return;
+    const target = networkUsers.find((profile) => profile.uid === targetUid);
+    if (!target) {
+      showToast('Este membro já não está disponível na rede.');
+      return;
     }
+    setConnectionBusyUid(targetUid);
+    try {
+      await sendConnectionRequest(
+        { uid: user.uid, name: userProfile.name },
+        { uid: target.uid, name: target.name },
+      );
+      showToast('Pedido de ligação enviado.');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível enviar o pedido.');
+    } finally {
+      setConnectionBusyUid(null);
+    }
+  };
+
+  const handleOpenConversation = (targetUid: string) => {
+    const connection = connectionFor(targetUid);
+    if (!connection || connection.status !== 'accepted') {
+      showToast('Só podes enviar mensagens a ligações aceites.');
+      return;
+    }
+    setMessageInput('');
+    setActiveConversationId(connection.id);
+    setCurrentTab('mensagens');
+  };
+
+  const handleSendMessage = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const text = messageInput.trim();
+    const conversation = conversations.find((item) => item.id === activeConversationId);
+    const connection = connections.find((item) => item.id === activeConversationId && item.status === 'accepted');
+    if (!user || !userProfile || !conversation || !connection || !text || messageSending) {
+      if (text && !connection) showToast('As mensagens só estão disponíveis enquanto a ligação estiver aceite.');
+      return;
+    }
+    setMessageSending(true);
+    try {
+      const messageRef = doc(collection(db, 'conversations', conversation.id, 'messages'));
+      const batch = writeBatch(db);
+      batch.set(messageRef, {
+        senderUid: user.uid,
+        senderName: userProfile.name,
+        text,
+        createdAt: serverTimestamp(),
+      });
+      batch.update(doc(db, 'conversations', conversation.id), {
+        lastMessage: text,
+        lastMessageId: messageRef.id,
+        lastMessageAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
+      setMessageInput('');
+    } catch {
+      showToast('Não foi possível enviar a mensagem.');
+    } finally {
+      setMessageSending(false);
+    }
+  };
+
+  const handleConnectionResponse = async (connection: NetworkConnection, response: 'accepted' | 'rejected') => {
+    if (!user || !userProfile || connectionBusyUid) return;
+    setConnectionBusyUid(connection.id);
+    try {
+      await respondToConnectionRequest(connection, { uid: user.uid, name: userProfile.name }, response);
+      showToast(response === 'accepted' ? 'Ligação aceite.' : 'Pedido recusado.');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível atualizar o pedido.');
+    } finally {
+      setConnectionBusyUid(null);
+    }
+  };
+
+  const handleCancelConnection = async (connection: NetworkConnection) => {
+    if (!user || connectionBusyUid) return;
+    if (connection.status === 'accepted' && !window.confirm('Queres terminar esta ligação?')) return;
+    setConnectionBusyUid(connection.id);
+    try {
+      await cancelOrDisconnectConnection(connection, user.uid);
+      showToast(connection.status === 'accepted' ? 'Ligação terminada.' : 'Pedido cancelado.');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível atualizar a ligação.');
+    } finally {
+      setConnectionBusyUid(null);
+    }
+  };
+
+  const handleMarkNotificationRead = async (notification: NotificationItem) => {
+    if (notification.read) return;
+    try {
+      await updateDoc(doc(db, 'notifications', notification.id), { read: true });
+    } catch { showToast('Não foi possível atualizar a notificação.'); }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    const unread = notifications.filter((item) => !item.read);
+    if (!unread.length) return;
+    try {
+      const batch = writeBatch(db);
+      unread.forEach((item) => batch.update(doc(db, 'notifications', item.id), { read: true }));
+      await batch.commit();
+    } catch { showToast('Não foi possível atualizar as notificações.'); }
   };
 
   const toggleEventRSVP = async (eventId: string, currentAttendees: string[]) => {
@@ -566,16 +885,31 @@ function MainApp() {
     e.preventDefault();
     if (!user || !editFormData) return;
     try {
-      await updateDoc(doc(db, 'accessRequests', user.uid), {
+      const avatarUrl = await persistImage(`members/${user.uid}/profile/avatar.jpg`, editFormData.avatarUrl);
+      const coverUrl = await persistImage(`members/${user.uid}/profile/cover.jpg`, editFormData.coverUrl);
+      const profileChanges = {
         name: editFormData.name,
         role: editFormData.role,
         location: editFormData.location,
+        company: editFormData.company || '',
         pitch: editFormData.pitch,
         lookingFor: editFormData.lookingFor,
         linkedinUrl: editFormData.linkedinUrl || '',
-        avatarUrl: editFormData.avatarUrl || '',
-        coverUrl: editFormData.coverUrl || ''
-      });
+        avatarUrl: avatarUrl || '',
+        coverUrl: coverUrl || '',
+      };
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'accessRequests', user.uid), profileChanges);
+      batch.set(doc(db, 'profiles', user.uid), {
+        uid: user.uid,
+        ...profileChanges,
+        visibleInNetwork,
+        acceptsMeetings,
+        status: 'approved',
+        createdAt: userProfile?.createdAt || serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      await batch.commit();
       setActiveModal('none');
       showToast('Perfil atualizado com sucesso!');
     } catch (err) { showToast('Erro ao atualizar perfil.'); }
@@ -612,8 +946,12 @@ function MainApp() {
     if (!user || !window.confirm('Eliminar permanentemente a conta?')) return;
     try {
       await deleteDoc(doc(db, 'accessRequests', user.uid));
+      await deleteDoc(doc(db, 'profiles', user.uid));
       await deleteUser(user);
-    } catch (err: any) { alert('Efetue login recente antes de eliminar a conta.'); }
+    } catch (err: any) {
+      if (err?.code === 'auth/requires-recent-login') alert('Por segurança, inicia sessão novamente antes de eliminar a conta.');
+      else alert('Não foi possível eliminar a conta. Os dados ainda não foram removidos por completo.');
+    }
   };
 
   const handlePrivacyToggle = async (key: 'visibleInNetwork' | 'acceptsMeetings', val: boolean) => {
@@ -621,7 +959,10 @@ function MainApp() {
     try {
       if (key === 'visibleInNetwork') setVisibleInNetwork(val);
       if (key === 'acceptsMeetings') setAcceptsMeetings(val);
-      await updateDoc(doc(db, 'accessRequests', user.uid), { [key]: val });
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'accessRequests', user.uid), { [key]: val });
+      batch.set(doc(db, 'profiles', user.uid), { [key]: val, updatedAt: serverTimestamp() }, { merge: true });
+      await batch.commit();
       showToast('Preferências de privacidade guardadas.');
     } catch (err) { showToast('Erro ao guardar privacidade.'); }
   };
@@ -639,24 +980,61 @@ function MainApp() {
     }, 600);
   };
 
+  const publicProfileFrom = (profile: UserProfile) => ({
+    uid: profile.uid,
+    name: profile.name,
+    role: profile.role,
+    company: profile.company || '',
+    location: profile.location,
+    pitch: profile.pitch,
+    lookingFor: profile.lookingFor,
+    avatarUrl: profile.avatarUrl || '',
+    coverUrl: profile.coverUrl || '',
+    linkedinUrl: profile.linkedinUrl || '',
+    visibleInNetwork: profile.visibleInNetwork !== false,
+    acceptsMeetings: profile.acceptsMeetings !== false,
+    status: 'approved',
+    createdAt: profile.createdAt || serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
   const handleAdminApprove = async (targetUid: string) => {
-    await updateDoc(doc(db, 'accessRequests', targetUid), { status: 'approved' });
-    setPendingRequests(pendingRequests.filter(u => u.uid !== targetUid));
-    showToast('Membro aprovado com sucesso.');
+    if (!isAdmin) return;
+    const target = pendingRequests.find((profile) => profile.uid === targetUid);
+    if (!target) return;
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'accessRequests', targetUid), { status: 'approved' });
+      batch.set(doc(db, 'profiles', targetUid), publicProfileFrom({ ...target, status: 'approved' }));
+      await batch.commit();
+      setPendingRequests(pendingRequests.filter(u => u.uid !== targetUid));
+      showToast('Membro aprovado com sucesso.');
+    } catch {
+      showToast('Não foi possível aprovar o membro.');
+    }
   };
 
   const handleAdminReject = async (targetUid: string) => {
+    if (!isAdmin) return;
     if (!window.confirm('Tem a certeza que pretende rejeitar esta candidatura?')) return;
-    await updateDoc(doc(db, 'accessRequests', targetUid), { status: 'rejected' });
-    setPendingRequests(pendingRequests.filter(u => u.uid !== targetUid));
-    showToast('Acesso rejeitado.');
+    try {
+      await updateDoc(doc(db, 'accessRequests', targetUid), { status: 'rejected' });
+      setPendingRequests(pendingRequests.filter(u => u.uid !== targetUid));
+      showToast('Acesso rejeitado.');
+    } catch { showToast('Não foi possível atualizar a candidatura.'); }
   };
 
   const handleAdminRevoke = async (targetUid: string) => {
+    if (!isAdmin) return;
     if (!window.confirm('Tem a certeza que pretende revogar o acesso a este membro?')) return;
-    await updateDoc(doc(db, 'accessRequests', targetUid), { status: 'rejected' });
-    setApprovedMembers(approvedMembers.filter(u => u.uid !== targetUid));
-    showToast('Acesso revogado.');
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'accessRequests', targetUid), { status: 'rejected' });
+      batch.delete(doc(db, 'profiles', targetUid));
+      await batch.commit();
+      setApprovedMembers(approvedMembers.filter(u => u.uid !== targetUid));
+      showToast('Acesso revogado.');
+    } catch { showToast('Não foi possível revogar o acesso.'); }
   };
 
   const parseDate = (timestamp: any) => {
@@ -752,7 +1130,22 @@ function MainApp() {
       );
     }
 
-    const activeProfile = viewingProfileUid ? networkUsers.find(u => u.uid === viewingProfileUid) || userProfile : userProfile;
+    const activeProfile = viewingProfileUid ? networkUsers.find(u => u.uid === viewingProfileUid) || null : userProfile;
+    const activeConversation = conversations.find((item) => item.id === activeConversationId) || null;
+    const conversationPartnerUid = activeConversation?.memberUids.find((uid) => uid !== user.uid);
+    const conversationPartnerName = activeConversation && conversationPartnerUid
+      ? activeConversation.memberNames?.[conversationPartnerUid] || networkUsers.find((profile) => profile.uid === conversationPartnerUid)?.name || 'Membro Elo'
+      : 'Seleciona uma conversa';
+    const incomingRequests = connections.filter((item) => item.recipientUid === user.uid && item.status === 'pending');
+    const filteredNetworkUsers = networkUsers.filter((profile) => {
+      const haystack = [profile.name, profile.role, profile.company, profile.location, profile.pitch, profile.lookingFor]
+        .filter(Boolean).join(' ').toLocaleLowerCase();
+      return haystack.includes(searchTerm.trim().toLocaleLowerCase());
+    });
+    const visibleNotifications = notifications.filter((item) =>
+      item.type === 'meeting_request' ? notifMeetings : notifConnections,
+    );
+    const unreadNotificationCount = visibleNotifications.filter((item) => !item.read).length;
 
     return (
       <div className="min-h-screen bg-white dark:bg-black text-black dark:text-white font-sans flex flex-col pb-20 md:pb-0">
@@ -775,7 +1168,8 @@ function MainApp() {
               <nav className="hidden md:flex gap-6 text-sm font-medium">
                 <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); }} className={`${currentTab === 'feed' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Feed</button>
                 <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); }} className={`${currentTab === 'rede' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Rede</button>
-                <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); }} className={`${currentTab === 'notificacoes' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Notificações</button>
+                <button onClick={() => { setCurrentTab('mensagens'); setViewingProfileUid(null); }} className={`${currentTab === 'mensagens' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Mensagens</button>
+                <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); }} className={`${currentTab === 'notificacoes' ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Notificações{unreadNotificationCount > 0 && <span className="ml-1 inline-flex min-w-4 h-4 items-center justify-center rounded-full bg-black px-1 text-[9px] text-white dark:bg-white dark:text-black" aria-label={`${unreadNotificationCount} por ler`}>{unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}</span>}</button>
                 <button onClick={() => { setCurrentTab('perfil'); setViewingProfileUid(null); }} className={`${currentTab === 'perfil' && !viewingProfileUid ? 'text-black dark:text-white' : 'text-gray-400 hover:text-black dark:hover:text-white'} ${btnFocus}`}>Perfil</button>
               </nav>
             </div>
@@ -787,9 +1181,9 @@ function MainApp() {
                 </button>
                 {isCreateMenuOpen && (
                   <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg flex flex-col p-2 gap-1 z-50 animate-modal">
-                    <button onClick={() => {setActiveModal('createPost'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Nova Publicação</button>
+                    <button onClick={() => {handleNewPost(); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Nova Publicação</button>
                     <button onClick={() => {setActiveModal('createMeeting'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Agendar Reunião</button>
-                    {user?.uid === ADMIN_UID && (
+                    {isAdmin && (
                       <button onClick={() => {setActiveModal('createEvent'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Criar Evento</button>
                     )}
                   </div>
@@ -798,7 +1192,7 @@ function MainApp() {
               <button onClick={() => setActiveModal('ai')} className={`text-xs border border-gray-300 dark:border-gray-800 px-3 py-1.5 rounded-full hover:border-black dark:hover:border-white ${btnFocus}`}>Elo AI</button>
               <button onClick={() => setActiveModal('planos')} className={`text-xs bg-gray-100 dark:bg-gray-900 text-black dark:text-white px-3 py-1.5 rounded-full ${btnFocus}`}>Pro</button>
               <button onClick={() => setActiveModal('settings')} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white ${btnFocus}`}>Definições</button>
-              {user.uid === ADMIN_UID && <button onClick={() => setActiveModal('admin')} className={`text-xs border border-gray-400 px-2 py-1 rounded ${btnFocus}`}>Admin</button>}
+              {isAdmin && <button onClick={() => setActiveModal('admin')} className={`text-xs border border-gray-400 px-2 py-1 rounded ${btnFocus}`}>Admin</button>}
               <button onClick={handleLogout} className={`text-xs text-gray-400 hover:text-black dark:hover:text-white ${btnFocus}`}>Sair</button>
             </div>
 
@@ -808,9 +1202,9 @@ function MainApp() {
               </button>
               {isCreateMenuOpen && (
                 <div className="absolute right-10 top-10 mt-2 w-48 bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg flex flex-col p-2 gap-1 z-50 animate-modal">
-                  <button onClick={() => {setActiveModal('createPost'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Nova Publicação</button>
+                  <button onClick={() => {handleNewPost(); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Nova Publicação</button>
                   <button onClick={() => {setActiveModal('createMeeting'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Agendar Reunião</button>
-                  {user?.uid === ADMIN_UID && (
+                  {isAdmin && (
                     <button onClick={() => {setActiveModal('createEvent'); setIsCreateMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Criar Evento</button>
                   )}
                 </div>
@@ -823,7 +1217,7 @@ function MainApp() {
                   <button onClick={() => {setActiveModal('ai'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Elo AI</button>
                   <button onClick={() => {setActiveModal('planos'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Pro</button>
                   <button onClick={() => {setActiveModal('settings'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Definições</button>
-                  {user.uid === ADMIN_UID && (
+                  {isAdmin && (
                     <button onClick={() => {setActiveModal('admin'); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 ${btnFocus}`}>Admin</button>
                   )}
                   <button onClick={() => {handleLogout(); setIsMobileMenuOpen(false);}} className={`text-left text-sm px-4 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 text-red-500 ${btnFocus}`}>Sair</button>
@@ -838,7 +1232,7 @@ function MainApp() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
               <div className="md:col-span-2 space-y-8">
                 <button 
-                  onClick={() => setActiveModal('createPost')}
+                  onClick={handleNewPost}
                   className={`w-full flex items-center gap-4 border border-gray-200 dark:border-gray-800 p-4 rounded-2xl cursor-pointer hover:border-black dark:hover:border-white transition-colors text-left ${btnFocus}`}
                 >
                   <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center shrink-0 overflow-hidden relative">
@@ -874,7 +1268,15 @@ function MainApp() {
                               <p className="text-xs text-gray-500">{post.authorRole}</p>
                             </div>
                           </div>
-                          <span className="text-xs text-gray-400">{post.timestamp}</span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs text-gray-400">{post.timestamp}</span>
+                            {post.authorUid === user.uid && (
+                              <div className="flex items-center gap-2 text-xs">
+                                <button onClick={() => handleEditPost(post)} className={`text-gray-500 hover:text-black dark:hover:text-white ${btnFocus}`}>Editar</button>
+                                <button disabled={deletingPostId === post.id} onClick={() => handleDeletePost(post.id)} className={`text-red-500 hover:text-red-700 disabled:opacity-50 ${btnFocus}`}>Eliminar</button>
+                              </div>
+                            )}
+                          </div>
                         </div>
 
                         <p className="text-sm leading-relaxed mb-4 whitespace-pre-wrap">{post.content}</p>
@@ -970,7 +1372,33 @@ function MainApp() {
 
           {currentTab === 'rede' && (
             <div className="space-y-6">
-              <input type="text" placeholder="Pesquisar por nome, cargo ou localização..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-4 rounded-xl text-sm focus:outline-none focus:border-black dark:focus:border-white" />
+              <input aria-label="Pesquisar membros" type="search" placeholder="Pesquisar pessoas, empresa, competências ou localização..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-4 rounded-xl text-sm focus:outline-none focus:border-black dark:focus:border-white" />
+
+              {incomingRequests.length > 0 && (
+                <section className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6 space-y-4" aria-labelledby="connection-requests-title">
+                  <div className="flex items-center justify-between">
+                    <h2 id="connection-requests-title" className="text-sm font-semibold">Pedidos de ligação</h2>
+                    <span className="text-xs text-gray-500">{incomingRequests.length} por responder</span>
+                  </div>
+                  <div className="space-y-3">
+                    {incomingRequests.map((request) => {
+                      const requester = networkUsers.find((profile) => profile.uid === request.requesterUid);
+                      return (
+                        <div key={request.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-gray-100 dark:border-gray-900 pt-3">
+                          <div>
+                            <p className="text-sm font-medium">{requester?.name || 'Membro Elo'}</p>
+                            <p className="text-xs text-gray-500">{requester ? `${requester.role} · ${requester.company || requester.location}` : 'Quer ligar-se contigo.'}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button disabled={connectionBusyUid === request.id} onClick={() => handleConnectionResponse(request, 'accepted')} className={`px-4 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black text-xs font-medium disabled:opacity-50 ${btnFocus}`}>Aceitar</button>
+                            <button disabled={connectionBusyUid === request.id} onClick={() => handleConnectionResponse(request, 'rejected')} className={`px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-xs disabled:opacity-50 ${btnFocus}`}>Ignorar</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
               
               {fetchingNetwork ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -983,9 +1411,13 @@ function MainApp() {
                   <Users size={48} className="opacity-20" />
                   <p className="text-sm">Ainda não há outros membros na rede.<br />Volta em breve.</p>
                 </div>
+              ) : filteredNetworkUsers.length === 0 ? (
+                <div className="py-16 text-center text-sm text-gray-500">Não encontrámos membros para essa pesquisa.</div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {networkUsers.filter(u => u.name.toLowerCase().includes(searchTerm.toLowerCase()) || u.role.toLowerCase().includes(searchTerm.toLowerCase()) || u.location.toLowerCase().includes(searchTerm.toLowerCase())).map(netUser => (
+                  {filteredNetworkUsers.map(netUser => {
+                    const relationship = connectionFor(netUser.uid);
+                    return (
                     <div key={netUser.uid} className="border border-gray-200 dark:border-gray-800 rounded-2xl p-6 flex flex-col justify-between space-y-4">
                       <div className="flex items-start gap-4">
                         <div className="w-12 h-12 bg-gray-100 dark:bg-gray-900 rounded-full flex items-center justify-center font-bold text-sm uppercase shrink-0 overflow-hidden relative">
@@ -994,41 +1426,130 @@ function MainApp() {
                         </div>
                         <div className="space-y-1 text-sm">
                           <h4 className="font-semibold">{netUser.name}</h4>
-                          <p className="text-xs text-gray-500">{netUser.role} • {netUser.location}</p>
+                          <p className="text-xs text-gray-500">{netUser.role}{netUser.company ? ` at ${netUser.company}` : ''} • {netUser.location}</p>
                           <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mt-2">{netUser.pitch}</p>
                           {netUser.lookingFor && <span className="inline-block mt-2 text-[10px] border border-gray-300 dark:border-gray-700 px-2.5 py-1 rounded-full text-gray-600 dark:text-gray-300">Procura: {netUser.lookingFor}</span>}
                         </div>
                       </div>
                       <div className="flex gap-3 pt-4 mt-2 border-t border-gray-100 dark:border-gray-900">
                         <button onClick={() => { setViewingProfileUid(netUser.uid); setCurrentTab('perfil'); }} className={`flex-1 py-2 border border-gray-200 dark:border-gray-800 rounded-xl text-xs hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>Ver Perfil</button>
-                        <button onClick={() => toggleFollow(netUser.uid)} className={`flex-1 py-2 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>{followingUids.includes(netUser.uid) ? 'A seguir' : 'Seguir'}</button>
+                        {relationship?.status === 'accepted' ? (
+                          <button disabled={connectionBusyUid === relationship.id} onClick={() => handleCancelConnection(relationship)} className={`flex-1 py-2 bg-gray-100 dark:bg-gray-900 rounded-xl text-xs font-medium disabled:opacity-50 ${btnFocus}`}>Ligados · Remover</button>
+                        ) : relationship?.status === 'pending' && relationship.requesterUid === user.uid ? (
+                          <button disabled={connectionBusyUid === relationship.id} onClick={() => handleCancelConnection(relationship)} className={`flex-1 py-2 border border-gray-300 dark:border-gray-700 rounded-xl text-xs disabled:opacity-50 ${btnFocus}`}>Cancelar pedido</button>
+                        ) : relationship?.status === 'pending' ? (
+                          <button onClick={() => handleConnectionResponse(relationship, 'accepted')} className={`flex-1 py-2 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Aceitar pedido</button>
+                        ) : (
+                          <button disabled={connectionBusyUid === netUser.uid} onClick={() => handleConnectionRequest(netUser.uid)} className={`flex-1 py-2 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium disabled:opacity-50 ${btnFocus}`}>Ligar</button>
+                        )}
                       </div>
                     </div>
-                  ))}
+                  );})}
                 </div>
               )}
             </div>
+          )}
+
+          {currentTab === 'mensagens' && (
+            <section className="max-w-5xl mx-auto w-full border border-gray-200 dark:border-gray-800 rounded-2xl overflow-hidden min-h-[520px] grid md:grid-cols-[290px,1fr]" aria-label="Mensagens">
+              <aside className={`border-b md:border-b-0 md:border-r border-gray-200 dark:border-gray-800 ${activeConversationId ? 'hidden md:block' : 'block'}`}>
+                <div className="p-5 border-b border-gray-100 dark:border-gray-900">
+                  <h2 className="font-semibold">Mensagens</h2>
+                  <p className="text-xs text-gray-500 mt-1">Só podes conversar com ligações aceites.</p>
+                </div>
+                {conversations.length === 0 ? (
+                  <p className="p-5 text-sm text-gray-500">Ainda não tens conversas. Liga-te a um membro e aceita o pedido para começar.</p>
+                ) : (
+                  <div className="divide-y divide-gray-100 dark:divide-gray-900">
+                    {conversations.map((conversation) => {
+                      const partnerUid = conversation.memberUids.find((uid) => uid !== user.uid) || '';
+                      const partnerName = conversation.memberNames?.[partnerUid] || networkUsers.find((profile) => profile.uid === partnerUid)?.name || 'Membro Elo';
+                      return (
+                        <button key={conversation.id} onClick={() => { setMessageInput(''); setActiveConversationId(conversation.id); }} className={`w-full text-left p-4 hover:bg-gray-50 dark:hover:bg-gray-900/50 ${activeConversationId === conversation.id ? 'bg-gray-50 dark:bg-gray-900/50' : ''} ${btnFocus}`}>
+                          <p className="text-sm font-medium truncate">{partnerName}</p>
+                          <p className="text-xs text-gray-500 truncate mt-1">{conversation.lastMessage || 'A conversa começou'}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </aside>
+
+              <div className={`min-w-0 flex flex-col ${activeConversationId ? 'flex' : 'hidden md:flex'}`}>
+                {!activeConversation ? (
+                  <div className="flex-1 min-h-[420px] flex items-center justify-center p-8 text-center text-sm text-gray-500">Escolhe uma conversa para ver as mensagens.</div>
+                ) : (
+                  <>
+                    <header className="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center gap-3">
+                      <button onClick={() => setActiveConversationId(null)} className={`md:hidden text-xs text-gray-500 ${btnFocus}`}>Voltar</button>
+                      <div>
+                        <h3 className="text-sm font-semibold">{conversationPartnerName}</h3>
+                        <p className="text-[10px] text-gray-500">{connections.some((item) => item.id === activeConversation.id && item.status === 'accepted') ? 'Ligação aceite' : 'Histórico · ligação terminada'}</p>
+                      </div>
+                    </header>
+                    <div className="flex-1 min-h-[360px] max-h-[65vh] overflow-y-auto p-4 md:p-6 space-y-3" aria-live="polite">
+                      {conversationMessages.length === 0 ? (
+                        <p className="text-center text-xs text-gray-500 pt-12">Esta é a tua primeira mensagem nesta conversa.</p>
+                      ) : conversationMessages.map((message) => (
+                        <div key={message.id} className={`max-w-[82%] rounded-2xl px-4 py-3 text-sm ${message.senderUid === user.uid ? 'ml-auto bg-black text-white dark:bg-white dark:text-black' : 'bg-gray-100 dark:bg-gray-900'}`}>
+                          {message.senderUid !== user.uid && <p className="text-[10px] font-semibold opacity-70 mb-1">{message.senderName}</p>}
+                          <p className="whitespace-pre-wrap break-words">{message.text}</p>
+                          <p className="text-[9px] opacity-60 text-right mt-1">{message.createdAt?.toDate?.().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }) || ''}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {connections.some((item) => item.id === activeConversation.id && item.status === 'accepted') ? (
+                      <form onSubmit={handleSendMessage} className="p-4 border-t border-gray-200 dark:border-gray-800 flex items-end gap-3">
+                        <textarea aria-label="Escrever mensagem" maxLength={2000} rows={2} value={messageInput} onChange={(event) => setMessageInput(event.target.value)} placeholder="Escreve uma mensagem…" className="flex-1 resize-none border border-gray-200 dark:border-gray-800 bg-transparent rounded-xl p-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
+                        <button type="submit" disabled={messageSending || !messageInput.trim()} className={`px-4 py-3 rounded-xl bg-black text-white dark:bg-white dark:text-black text-sm font-medium disabled:opacity-40 ${btnFocus}`}>{messageSending ? 'A enviar…' : 'Enviar'}</button>
+                      </form>
+                    ) : (
+                      <p className="p-4 border-t border-gray-200 dark:border-gray-800 text-xs text-gray-500">Só é possível enviar mensagens enquanto a ligação estiver aceite.</p>
+                    )}
+                  </>
+                )}
+              </div>
+            </section>
           )}
 
           {currentTab === 'notificacoes' && (
             <div className="max-w-2xl mx-auto space-y-6">
               <div className="flex justify-between items-center pb-4 border-b border-gray-200 dark:border-gray-800">
                 <h2 className="text-lg font-semibold">Notificações</h2>
-                <button onClick={() => setNotifications(notifications.map(n => ({ ...n, read: true })))} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white ${btnFocus}`}>Marcar todas como lidas</button>
+                <button onClick={handleMarkAllNotificationsRead} disabled={unreadNotificationCount === 0} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white disabled:opacity-40 ${btnFocus}`}>Marcar todas como lidas</button>
               </div>
+
+              {incomingMeetings.length > 0 && (
+                <section className="border border-gray-200 dark:border-gray-800 rounded-2xl p-5 space-y-4">
+                  <h3 className="text-sm font-semibold">Pedidos de reunião</h3>
+                  {incomingMeetings.map((meeting) => (
+                    <div key={meeting.id} className="border-t border-gray-100 dark:border-gray-900 pt-4 space-y-3">
+                      <div>
+                        <p className="text-sm font-medium">{meeting.requesterName} propôs uma reunião</p>
+                        <p className="text-xs text-gray-500">{new Date(meeting.proposedDateTime).toLocaleString('pt-PT', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                        {meeting.message && <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{meeting.message}</p>}
+                      </div>
+                      <div className="flex gap-2">
+                        <button disabled={meetingBusyId === meeting.id} onClick={() => handleMeetingResponse(meeting, 'accepted')} className={`px-4 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black text-xs font-medium disabled:opacity-50 ${btnFocus}`}>Aceitar</button>
+                        <button disabled={meetingBusyId === meeting.id} onClick={() => handleMeetingResponse(meeting, 'rejected')} className={`px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-xs disabled:opacity-50 ${btnFocus}`}>Recusar</button>
+                      </div>
+                    </div>
+                  ))}
+                </section>
+              )}
               
-              {notifications.length === 0 ? (
-                <div className="py-16 flex flex-col items-center justify-center text-gray-400 space-y-4 text-center">
+              {visibleNotifications.length === 0 ? (
+                <div className="py-16 flex flex-col justify-center items-center text-gray-400 space-y-4 text-center">
                   <Bell size={48} className="opacity-20" />
-                  <p className="text-sm">Sem notificações por agora.</p>
+                  <p className="text-sm">Sem atividade por agora.</p>
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {notifications.map(n => (
-                    <div key={n.id} className={`p-4 rounded-xl border flex items-center justify-between ${n.read ? 'border-gray-100 dark:border-gray-900 opacity-60' : 'border-gray-300 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50'}`}>
-                      <p className="text-sm">{n.text}</p>
-                      <span className="text-[10px] text-gray-400">{n.timestamp}</span>
-                    </div>
+                  {visibleNotifications.map(n => (
+                    <button key={n.id} onClick={() => handleMarkNotificationRead(n)} className={`w-full text-left p-4 rounded-xl border flex items-center justify-between gap-4 ${n.read ? 'border-gray-100 dark:border-gray-900 opacity-60' : 'border-gray-300 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50'} ${btnFocus}`}>
+                      <span className="text-sm">{n.type === 'connection_request' ? <><strong>{n.actorName}</strong> enviou-te um pedido de ligação.</> : n.type === 'connection_accepted' ? <><strong>{n.actorName}</strong> aceitou o teu pedido de ligação.</> : <><strong>{n.actorName}</strong> pediu para marcar uma reunião.</>}</span>
+                      <span className="shrink-0 text-[10px] text-gray-400">{n.createdAt?.toDate?.().toLocaleDateString('pt-PT') || 'Agora'}</span>
+                    </button>
                   ))}
                 </div>
               )}
@@ -1059,8 +1580,14 @@ function MainApp() {
                       <button onClick={() => { setSettingsTab('perfil'); setActiveModal('settings'); }} className={`text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>Editar Perfil</button>
                     ) : (
                       <div className="flex gap-3 w-full md:w-auto">
-                        <button onClick={() => { setMeetingData({ targetUid: activeProfile.uid, date: '', time: '', message: '' }); setActiveModal('createMeeting'); }} className={`flex-1 md:flex-none text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl font-medium ${btnFocus}`}>Reunião</button>
-                        <button onClick={() => toggleFollow(activeProfile.uid)} className={`flex-1 md:flex-none text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl ${btnFocus}`}>{followingUids.includes(activeProfile.uid) ? 'A seguir' : 'Seguir'}</button>
+                        {activeProfile.acceptsMeetings !== false && <button onClick={() => { setMeetingData({ targetUid: activeProfile.uid, date: '', time: '', message: '' }); setActiveModal('createMeeting'); }} className={`flex-1 md:flex-none text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl font-medium ${btnFocus}`}>Reunião</button>}
+                        {(() => {
+                          const relationship = connectionFor(activeProfile.uid);
+                          if (relationship?.status === 'accepted') return <><button onClick={() => handleOpenConversation(activeProfile.uid)} className={`flex-1 md:flex-none text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl ${btnFocus}`}>Mensagem</button><button disabled={connectionBusyUid === relationship.id} onClick={() => handleCancelConnection(relationship)} className={`flex-1 md:flex-none text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl disabled:opacity-50 ${btnFocus}`}>Ligados · Remover</button></>;
+                          if (relationship?.status === 'pending' && relationship.requesterUid === user.uid) return <button disabled={connectionBusyUid === relationship.id} onClick={() => handleCancelConnection(relationship)} className={`flex-1 md:flex-none text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl disabled:opacity-50 ${btnFocus}`}>Cancelar pedido</button>;
+                          if (relationship?.status === 'pending') return <button onClick={() => handleConnectionResponse(relationship, 'accepted')} className={`flex-1 md:flex-none text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl ${btnFocus}`}>Aceitar pedido</button>;
+                          return <button disabled={connectionBusyUid === activeProfile.uid} onClick={() => handleConnectionRequest(activeProfile.uid)} className={`flex-1 md:flex-none text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl disabled:opacity-50 ${btnFocus}`}>Ligar</button>;
+                        })()}
                       </div>
                     )}
                   </div>
@@ -1095,14 +1622,15 @@ function MainApp() {
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-black border-t border-gray-200 dark:border-gray-800 flex justify-around py-3 text-xs z-40">
           <button onClick={() => { setCurrentTab('feed'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'feed' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Feed</button>
           <button onClick={() => { setCurrentTab('rede'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'rede' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Rede</button>
-          <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'notificacoes' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Notificações</button>
+          <button onClick={() => { setCurrentTab('mensagens'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'mensagens' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Mensagens</button>
+          <button onClick={() => { setCurrentTab('notificacoes'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'notificacoes' ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Notificações{unreadNotificationCount > 0 && <span className="ml-1 inline-flex min-w-4 h-4 items-center justify-center rounded-full bg-black px-1 text-[9px] text-white dark:bg-white dark:text-black">{unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}</span>}</button>
           <button onClick={() => { setCurrentTab('perfil'); setViewingProfileUid(null); setIsMobileMenuOpen(false); setIsCreateMenuOpen(false); }} className={`${currentTab === 'perfil' && !viewingProfileUid ? 'font-bold' : 'text-gray-400'} ${btnFocus} p-2`}>Perfil</button>
         </nav>
 
         {activeModal === 'createPost' && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
             <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-6 max-w-lg w-full space-y-4 animate-modal">
-              <h3 className="text-base font-semibold">Nova Publicação</h3>
+              <h3 className="text-base font-semibold">{editingPostId ? 'Editar Publicação' : 'Nova Publicação'}</h3>
               <form onSubmit={handleCreatePost} className="space-y-4">
                 <div>
                   <textarea maxLength={500} placeholder="O que queres partilhar com a rede?" value={newPostText} onChange={e => setNewPostText(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-4 rounded-xl text-sm h-32 focus:outline-none focus:border-black dark:focus:border-white" />
@@ -1116,8 +1644,8 @@ function MainApp() {
                   {newPostImage && <span className="text-xs text-gray-500">Imagem anexada pronta a publicar.</span>}
                 </div>
                 <div className="flex justify-end gap-3 pt-2">
-                  <button type="button" onClick={() => setActiveModal('none')} className={`px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs ${btnFocus}`}>Cancelar</button>
-                  <button type="submit" className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium ${btnFocus}`}>Publicar</button>
+                  <button type="button" onClick={() => { setActiveModal('none'); setEditingPostId(null); setNewPostText(''); setNewPostImage(null); }} className={`px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs ${btnFocus}`}>Cancelar</button>
+                  <button type="submit" disabled={!newPostText.trim()} className={`px-4 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-medium disabled:opacity-50 ${btnFocus}`}>{editingPostId ? 'Guardar Alterações' : 'Publicar'}</button>
                 </div>
               </form>
             </div>
@@ -1261,8 +1789,8 @@ function MainApp() {
                 {settingsTab === 'notificacoes' && (
                   <div className="space-y-6 text-sm py-2">
                     <div className="flex items-center justify-between">
-                      <span>Notificar em novos seguidores</span>
-                      <button onClick={() => { const v = !notifFollowers; setNotifFollowers(v); localStorage.setItem('elo_notif_followers', String(v)); }} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{notifFollowers ? 'Sim' : 'Não'}</button>
+                      <span>Pedidos e ligações</span>
+                      <button onClick={() => { const v = !notifConnections; setNotifConnections(v); localStorage.setItem('elo_notif_connections', String(v)); }} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{notifConnections ? 'Sim' : 'Não'}</button>
                     </div>
                     <div className="flex items-center justify-between">
                       <span>Notificar em pedidos de reunião</span>
@@ -1298,8 +1826,9 @@ function MainApp() {
                       <input type="text" placeholder="Nome" value={editFormData.name} onChange={e => setEditFormData({ ...editFormData, name: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <input type="text" placeholder="Cargo" value={editFormData.role} onChange={e => setEditFormData({ ...editFormData, role: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                        <input type="text" placeholder="Localização" value={editFormData.location} onChange={e => setEditFormData({ ...editFormData, location: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
+                        <input type="text" placeholder="Empresa / Projeto" value={editFormData.company || ''} onChange={e => setEditFormData({ ...editFormData, company: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
                       </div>
+                      <input type="text" placeholder="Localização" value={editFormData.location} onChange={e => setEditFormData({ ...editFormData, location: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
                     </div>
 
                     <div className="space-y-4">

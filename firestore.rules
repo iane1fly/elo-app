@@ -1,0 +1,335 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.get('admin', false) == true;
+    }
+
+    function approved(uid) {
+      return exists(/databases/$(database)/documents/accessRequests/$(uid))
+        && get(/databases/$(database)/documents/accessRequests/$(uid)).data.status == 'approved';
+    }
+
+    function isApprovedMember() {
+      return signedIn() && approved(request.auth.uid);
+    }
+
+    function canonicalConnectionId(firstUid, secondUid) {
+      return firstUid < secondUid
+        ? firstUid + '_' + secondUid
+        : secondUid + '_' + firstUid;
+    }
+
+    function validPublicProfile(uid) {
+      return request.resource.data.uid == uid
+        && request.resource.data.status == 'approved'
+        && request.resource.data.keys().hasOnly([
+          'uid', 'name', 'role', 'company', 'location', 'pitch', 'lookingFor',
+          'avatarUrl', 'coverUrl', 'linkedinUrl', 'visibleInNetwork',
+          'acceptsMeetings', 'status', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 100
+        && request.resource.data.role is string
+        && request.resource.data.location is string
+        && request.resource.data.pitch is string
+        && request.resource.data.pitch.size() <= 1000
+        && request.resource.data.lookingFor is string
+        && request.resource.data.visibleInNetwork is bool
+        && request.resource.data.acceptsMeetings is bool;
+    }
+
+    function profileMatchesApplication(uid) {
+      let application = getAfter(/databases/$(database)/documents/accessRequests/$(uid)).data;
+      return application.status == 'approved'
+        && request.resource.data.name == application.get('name', '')
+        && request.resource.data.role == application.get('role', '')
+        && request.resource.data.company == application.get('company', '')
+        && request.resource.data.location == application.get('location', '')
+        && request.resource.data.pitch == application.get('pitch', '')
+        && request.resource.data.lookingFor == application.get('lookingFor', '')
+        && request.resource.data.avatarUrl == application.get('avatarUrl', '')
+        && request.resource.data.coverUrl == application.get('coverUrl', '')
+        && request.resource.data.linkedinUrl == application.get('linkedinUrl', '')
+        && request.resource.data.visibleInNetwork == application.get('visibleInNetwork', true)
+        && request.resource.data.acceptsMeetings == application.get('acceptsMeetings', true);
+    }
+
+    function validPostShape(data) {
+      return data.authorUid is string
+        && data.authorName is string
+        && data.authorRole is string
+        && data.content is string
+        && data.content.size() > 0
+        && data.content.size() <= 500
+        && data.likes is list
+        && data.comments is list;
+    }
+
+    function validLikeChange() {
+      let oldLikes = resource.data.likes.toSet();
+      let newLikes = request.resource.data.likes.toSet();
+      let added = newLikes.difference(oldLikes);
+      let removed = oldLikes.difference(newLikes);
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes'])
+        && ((added.size() == 1 && added.hasAll([request.auth.uid]) && removed.size() == 0)
+          || (removed.size() == 1 && removed.hasAll([request.auth.uid]) && added.size() == 0));
+    }
+
+    function validCommentChange() {
+      let oldComments = resource.data.get('comments', []);
+      let newComments = request.resource.data.get('comments', []);
+      let profile = get(/databases/$(database)/documents/accessRequests/$(request.auth.uid)).data;
+      let addedComment = newComments[oldComments.size()];
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['comments'])
+        && newComments.size() == oldComments.size() + 1
+        && newComments.hasAll(oldComments)
+        && addedComment.authorUid == request.auth.uid
+        && addedComment.authorName == profile.name
+        && addedComment.text is string
+        && addedComment.text.size() > 0
+        && addedComment.text.size() <= 500;
+    }
+
+    function validAttendeeChange() {
+      let oldAttendees = resource.data.attendees.toSet();
+      let newAttendees = request.resource.data.attendees.toSet();
+      let added = newAttendees.difference(oldAttendees);
+      let removed = oldAttendees.difference(newAttendees);
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendees'])
+        && ((added.size() == 1 && added.hasAll([request.auth.uid]) && removed.size() == 0)
+          || (removed.size() == 1 && removed.hasAll([request.auth.uid]) && added.size() == 0));
+    }
+
+    match /accessRequests/{uid} {
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.uid == uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 320
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'name', 'location', 'role', 'company', 'pitch', 'lookingFor',
+          'avatarUrl', 'coverUrl', 'linkedinUrl', 'visibleInNetwork', 'acceptsMeetings',
+          'status', 'createdAt'
+        ]);
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status in ['approved', 'rejected']
+        || (signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'email', 'name', 'location', 'role', 'company', 'pitch', 'lookingFor',
+            'avatarUrl', 'coverUrl', 'linkedinUrl', 'visibleInNetwork', 'acceptsMeetings'
+          ]));
+      allow delete: if signedIn() && request.auth.uid == uid || isAdmin();
+    }
+
+    match /profiles/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin()
+        || (isApprovedMember() && resource.data.status == 'approved' && resource.data.visibleInNetwork == true));
+      allow list: if isApprovedMember()
+        && resource.data.status == 'approved'
+        && resource.data.visibleInNetwork == true;
+      allow create: if isAdmin() && validPublicProfile(uid)
+        || (signedIn() && request.auth.uid == uid && approved(uid)
+          && validPublicProfile(uid) && profileMatchesApplication(uid));
+      allow update: if isAdmin() && validPublicProfile(uid)
+        || (signedIn() && request.auth.uid == uid && approved(uid)
+          && validPublicProfile(uid)
+          && profileMatchesApplication(uid)
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'name', 'role', 'company', 'location', 'pitch', 'lookingFor', 'avatarUrl',
+            'coverUrl', 'linkedinUrl', 'visibleInNetwork', 'acceptsMeetings', 'updatedAt'
+          ]));
+      allow delete: if isAdmin() || (signedIn() && request.auth.uid == uid);
+    }
+
+    match /connections/{connectionId} {
+      allow get: if isApprovedMember()
+        && (!exists(/databases/$(database)/documents/connections/$(connectionId))
+          || (resource.data.memberUids is list && resource.data.memberUids.hasAll([request.auth.uid])));
+      allow list: if isApprovedMember() && resource.data.memberUids is list
+        && resource.data.memberUids.hasAll([request.auth.uid]);
+      allow create: if isApprovedMember()
+        && request.resource.data.keys().hasOnly([
+          'memberUids', 'memberNames', 'requesterUid', 'recipientUid', 'status', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.memberUids is list
+        && request.resource.data.memberUids.size() == 2
+        && request.resource.data.memberNames is map
+        && request.resource.data.memberNames.keys().size() == 2
+        && request.resource.data.memberNames.keys().hasAll([request.auth.uid, request.resource.data.recipientUid])
+        && request.resource.data.memberNames.get(request.auth.uid, '') == get(/databases/$(database)/documents/accessRequests/$(request.auth.uid)).data.name
+        && request.resource.data.memberNames.get(request.resource.data.recipientUid, '') == get(/databases/$(database)/documents/profiles/$(request.resource.data.recipientUid)).data.name
+        && request.resource.data.memberUids.hasAll([request.auth.uid, request.resource.data.recipientUid])
+        && request.resource.data.requesterUid == request.auth.uid
+        && request.resource.data.recipientUid != request.auth.uid
+        && approved(request.resource.data.recipientUid)
+        && request.resource.data.status == 'pending'
+        && connectionId == canonicalConnectionId(request.auth.uid, request.resource.data.recipientUid);
+      allow update: if isApprovedMember()
+        && resource.data.memberUids.hasAll([request.auth.uid])
+        && request.resource.data.memberUids == resource.data.memberUids
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'memberNames', 'requesterUid', 'recipientUid', 'status', 'createdAt', 'updatedAt'
+        ])
+        && ((resource.data.status == 'pending'
+            && resource.data.recipientUid == request.auth.uid
+            && request.resource.data.requesterUid == resource.data.requesterUid
+            && request.resource.data.recipientUid == resource.data.recipientUid
+            && request.resource.data.status in ['accepted', 'rejected'])
+          || (resource.data.status == 'pending'
+            && resource.data.requesterUid == request.auth.uid
+            && request.resource.data.requesterUid == resource.data.requesterUid
+            && request.resource.data.recipientUid == resource.data.recipientUid
+            && request.resource.data.status == 'cancelled')
+          || (resource.data.status == 'accepted'
+            && request.resource.data.requesterUid == resource.data.requesterUid
+            && request.resource.data.recipientUid == resource.data.recipientUid
+            && request.resource.data.status == 'cancelled')
+          || (resource.data.status in ['rejected', 'cancelled']
+            && request.resource.data.requesterUid == request.auth.uid
+            && request.resource.data.recipientUid != request.auth.uid
+            && resource.data.memberUids.hasAll([request.resource.data.recipientUid])
+            && approved(request.resource.data.recipientUid)
+            && request.resource.data.memberNames is map
+            && request.resource.data.memberNames.keys().size() == 2
+            && request.resource.data.memberNames.keys().hasAll([request.auth.uid, request.resource.data.recipientUid])
+            && request.resource.data.memberNames.get(request.auth.uid, '') == get(/databases/$(database)/documents/accessRequests/$(request.auth.uid)).data.name
+            && request.resource.data.memberNames.get(request.resource.data.recipientUid, '') == get(/databases/$(database)/documents/profiles/$(request.resource.data.recipientUid)).data.name
+            && request.resource.data.status == 'pending'
+            && connectionId == canonicalConnectionId(request.auth.uid, request.resource.data.recipientUid)));
+      allow delete: if false;
+    }
+
+    match /conversations/{conversationId} {
+      allow get: if isApprovedMember()
+        && ((exists(/databases/$(database)/documents/conversations/$(conversationId))
+            && resource.data.memberUids.hasAll([request.auth.uid]))
+          || (!exists(/databases/$(database)/documents/conversations/$(conversationId))
+            && exists(/databases/$(database)/documents/connections/$(conversationId))
+            && get(/databases/$(database)/documents/connections/$(conversationId)).data.memberUids.hasAll([request.auth.uid])));
+      allow list: if isApprovedMember() && resource.data.memberUids.hasAll([request.auth.uid]);
+      allow create: if isApprovedMember()
+        && request.resource.data.keys().hasOnly([
+          'memberUids', 'memberNames', 'createdAt', 'updatedAt', 'lastMessage', 'lastMessageAt', 'lastMessageId'
+        ])
+        && request.resource.data.memberUids is list
+        && request.resource.data.memberUids.size() == 2
+        && request.resource.data.memberUids.hasAll([request.auth.uid])
+        && request.resource.data.memberNames is map
+        && getAfter(/databases/$(database)/documents/connections/$(conversationId)).data.status == 'accepted'
+        && getAfter(/databases/$(database)/documents/connections/$(conversationId)).data.memberUids == request.resource.data.memberUids
+        && request.resource.data.memberNames == getAfter(/databases/$(database)/documents/connections/$(conversationId)).data.memberNames
+        && conversationId == canonicalConnectionId(request.resource.data.memberUids[0], request.resource.data.memberUids[1]);
+      allow update: if isApprovedMember()
+        && resource.data.memberUids.hasAll([request.auth.uid])
+        && get(/databases/$(database)/documents/connections/$(conversationId)).data.status == 'accepted'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'lastMessage', 'lastMessageAt', 'lastMessageId', 'updatedAt'
+        ])
+        && request.resource.data.lastMessage is string
+        && request.resource.data.lastMessage.size() > 0
+        && request.resource.data.lastMessage.size() <= 2000
+        && getAfter(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(request.resource.data.lastMessageId)).data.senderUid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(request.resource.data.lastMessageId)).data.text == request.resource.data.lastMessage;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow get, list: if isApprovedMember()
+          && get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids.hasAll([request.auth.uid]);
+        allow create: if isApprovedMember()
+          && get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids.hasAll([request.auth.uid])
+          && get(/databases/$(database)/documents/connections/$(conversationId)).data.status == 'accepted'
+          && request.resource.data.keys().hasOnly(['senderUid', 'senderName', 'text', 'createdAt'])
+          && request.resource.data.senderUid == request.auth.uid
+          && request.resource.data.senderName == get(/databases/$(database)/documents/accessRequests/$(request.auth.uid)).data.name
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000;
+        allow update, delete: if false;
+      }
+    }
+
+    match /notifications/{notificationId} {
+      allow get, list: if isApprovedMember() && resource.data.recipientUid == request.auth.uid;
+      allow create: if isApprovedMember()
+        && request.resource.data.keys().hasOnly([
+          'recipientUid', 'actorUid', 'actorName', 'connectionId', 'meetingId', 'type', 'read', 'createdAt'
+        ])
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.actorName == get(/databases/$(database)/documents/accessRequests/$(request.auth.uid)).data.name
+        && request.resource.data.read == false
+        && approved(request.resource.data.recipientUid)
+        && ((request.resource.data.type == 'connection_request'
+            && getAfter(/databases/$(database)/documents/connections/$(request.resource.data.connectionId)).data.status == 'pending'
+            && getAfter(/databases/$(database)/documents/connections/$(request.resource.data.connectionId)).data.requesterUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/connections/$(request.resource.data.connectionId)).data.recipientUid == request.resource.data.recipientUid)
+          || (request.resource.data.type == 'connection_accepted'
+            && getAfter(/databases/$(database)/documents/connections/$(request.resource.data.connectionId)).data.status == 'accepted'
+            && getAfter(/databases/$(database)/documents/connections/$(request.resource.data.connectionId)).data.recipientUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/connections/$(request.resource.data.connectionId)).data.requesterUid == request.resource.data.recipientUid)
+          || (request.resource.data.type == 'meeting_request'
+            && getAfter(/databases/$(database)/documents/meetings/$(request.resource.data.meetingId)).data.status == 'pending'
+            && getAfter(/databases/$(database)/documents/meetings/$(request.resource.data.meetingId)).data.requesterUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/meetings/$(request.resource.data.meetingId)).data.targetUid == request.resource.data.recipientUid));
+      allow update: if isApprovedMember()
+        && resource.data.recipientUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])
+        && request.resource.data.read is bool;
+      allow delete: if isApprovedMember() && resource.data.recipientUid == request.auth.uid;
+    }
+
+    match /posts/{postId} {
+      allow read: if isApprovedMember();
+      allow create: if isApprovedMember()
+        && validPostShape(request.resource.data)
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.authorName == get(/databases/$(database)/documents/accessRequests/$(request.auth.uid)).data.name
+        && request.resource.data.likes.size() == 0
+        && request.resource.data.comments.size() == 0;
+      allow update: if isApprovedMember()
+        && ((resource.data.authorUid == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['content', 'imageUrl', 'updatedAt'])
+            && request.resource.data.content is string
+            && request.resource.data.content.size() > 0
+            && request.resource.data.content.size() <= 500)
+          || validLikeChange()
+          || validCommentChange());
+      allow delete: if isApprovedMember() && resource.data.authorUid == request.auth.uid;
+    }
+
+    match /events/{eventId} {
+      allow read: if isApprovedMember();
+      allow create: if isAdmin() && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isApprovedMember() && validAttendeeChange();
+      allow delete: if isAdmin();
+    }
+
+    match /meetings/{meetingId} {
+      allow create: if isApprovedMember()
+        && request.resource.data.requesterUid == request.auth.uid
+        && request.resource.data.targetUid != request.auth.uid
+        && approved(request.resource.data.targetUid)
+        && get(/databases/$(database)/documents/profiles/$(request.resource.data.targetUid)).data.visibleInNetwork == true
+        && get(/databases/$(database)/documents/profiles/$(request.resource.data.targetUid)).data.acceptsMeetings == true
+        && request.resource.data.status == 'pending';
+      allow get, list: if isApprovedMember()
+        && (resource.data.requesterUid == request.auth.uid || resource.data.targetUid == request.auth.uid);
+      allow update: if isApprovedMember()
+        && resource.data.targetUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.status in ['accepted', 'rejected'];
+      allow delete: if isApprovedMember() && resource.data.requesterUid == request.auth.uid;
+    }
+  }
+}
