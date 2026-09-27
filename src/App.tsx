@@ -32,9 +32,11 @@ import {
   getCountFromServer,
   writeBatch
 } from 'firebase/firestore';
-import { ThumbsUp, MessageCircle, Share2, Link2, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Palette, Shield, Pencil, Calendar, MapPin, ExternalLink, Plus } from 'lucide-react';
-import logo from './logo.png';
+import { ThumbsUp, MessageCircle, Share2, ImagePlus, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Palette, Shield, Calendar, MapPin, ExternalLink, Plus, Sun, Moon } from 'lucide-react';
+import logo from './logo-clean.png';
 import { auth, db } from './firebase';
+import ProfileEditorModal from './ProfileEditorModal';
+import { compressLocalImage, type ImagePurpose } from './image';
 import {
   cancelOrDisconnectConnection,
   connectionIdFor,
@@ -43,7 +45,7 @@ import {
   watchConnections,
   type NetworkConnection,
 } from './network';
-import { isOptionalHttpsUrl, normalizeProfile, type AccessStatus, type UserProfile } from './profile';
+import { IMAGE_DATA_URL_LIMITS, isOptionalHttpsUrl, isOptionalImageSource, normalizeProfile, type AccessStatus, type UserProfile } from './profile';
 
 interface Post {
   id: string;
@@ -142,7 +144,7 @@ function MainApp() {
   const [editFormData, setEditFormData] = useState<UserProfile | null>(null);
 
   const [currentTab, setCurrentTab] = useState<'feed' | 'rede' | 'mensagens' | 'notificacoes' | 'perfil'>('feed');
-  const [activeModal, setActiveModal] = useState<'none' | 'settings' | 'planos' | 'ai' | 'admin' | 'createPost' | 'createMeeting' | 'createEvent'>('none');
+  const [activeModal, setActiveModal] = useState<'none' | 'settings' | 'editProfile' | 'planos' | 'ai' | 'admin' | 'createPost' | 'createMeeting' | 'createEvent'>('none');
   const [viewingProfileUid, setViewingProfileUid] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
@@ -162,6 +164,7 @@ function MainApp() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [newPostText, setNewPostText] = useState('');
   const [newPostImage, setNewPostImage] = useState<string | null>(null);
+  const [imageProcessing, setImageProcessing] = useState<ImagePurpose | null>(null);
   const [activeCommentPostId, setActiveCommentPostId] = useState<string | null>(null);
   const [commentInput, setCommentInput] = useState('');
 
@@ -198,7 +201,7 @@ function MainApp() {
   ]);
   const [aiInput, setAiInput] = useState('');
 
-  const [settingsTab, setSettingsTab] = useState<'aparencia' | 'conta' | 'privacidade' | 'notificacoes' | 'perfil'>('aparencia');
+  const [settingsTab, setSettingsTab] = useState<'aparencia' | 'conta' | 'privacidade' | 'notificacoes'>('aparencia');
   const [newEmail, setNewEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [accountSettingsMsg, setAccountSettingsMsg] = useState('');
@@ -220,6 +223,29 @@ function MainApp() {
 
   const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
     e.currentTarget.style.display = 'none';
+  };
+
+  const handleLocalImageChange = async (event: React.ChangeEvent<HTMLInputElement>, purpose: ImagePurpose) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file) return;
+
+    setImageProcessing(purpose);
+    try {
+      const imageData = await compressLocalImage(file, purpose);
+      if (purpose === 'post') {
+        setNewPostImage(imageData);
+        showToast('Imagem pronta para a publicação.');
+      } else {
+        const key = purpose === 'avatar' ? 'avatarUrl' : 'coverUrl';
+        setEditFormData((current) => current ? { ...current, [key]: imageData } : current);
+        showToast('Imagem pronta. Guarda o perfil para a aplicar.');
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível processar esta imagem.');
+    } finally {
+      setImageProcessing(null);
+    }
   };
 
   useEffect(() => {
@@ -443,10 +469,10 @@ function MainApp() {
   }, [activeModal, isAdmin]);
 
   useEffect(() => {
-    if (activeModal === 'settings' && settingsTab === 'perfil' && userProfile) {
+    if (activeModal === 'editProfile' && userProfile) {
       setEditFormData({ ...userProfile });
     }
-  }, [activeModal, settingsTab, userProfile]);
+  }, [activeModal, userProfile]);
 
   useEffect(() => {
     if (currentTab === 'perfil') {
@@ -502,20 +528,24 @@ function MainApp() {
     if (!user) return;
     try {
       const payload: UserProfile = {
-        uid: user.uid, email: user.email || '', ...onboardingData, status: 'pending',
+        uid: user.uid, email: user.email || '', ...onboardingData, status: 'approved',
         avatarUrl: '', coverUrl: '', linkedinUrl: '',
         visibleInNetwork: true, acceptsMeetings: true, createdAt: serverTimestamp()
       };
-      await setDoc(doc(db, 'accessRequests', user.uid), payload);
-    } catch (err: any) { setAuthError('Erro ao submeter perfil.'); }
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'accessRequests', user.uid), payload);
+      batch.set(doc(db, 'profiles', user.uid), publicProfileFrom(payload));
+      await batch.commit();
+      setAuthError('');
+    } catch { setAuthError('Não foi possível criar o perfil. Tenta novamente.'); }
   };
 
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPostText.trim() || !user) return;
     const imageUrl = newPostImage?.trim() || '';
-    if (!isOptionalHttpsUrl(imageUrl)) {
-      showToast('Usa um link HTTPS válido para a imagem.');
+    if (!isOptionalImageSource(imageUrl, IMAGE_DATA_URL_LIMITS.post)) {
+      showToast('Escolhe uma imagem JPG, PNG ou WebP válida.');
       return;
     }
     try {
@@ -808,8 +838,10 @@ function MainApp() {
     const avatarUrl = (editFormData.avatarUrl || '').trim();
     const coverUrl = (editFormData.coverUrl || '').trim();
     const linkedinUrl = (editFormData.linkedinUrl || '').trim();
-    if (![avatarUrl, coverUrl, linkedinUrl].every(isOptionalHttpsUrl)) {
-      showToast('Usa links HTTPS válidos para as imagens e o LinkedIn.');
+    if (!isOptionalImageSource(avatarUrl, IMAGE_DATA_URL_LIMITS.avatar)
+      || !isOptionalImageSource(coverUrl, IMAGE_DATA_URL_LIMITS.cover)
+      || !isOptionalHttpsUrl(linkedinUrl)) {
+      showToast('Escolhe imagens válidas e usa um link HTTPS válido para o LinkedIn.');
       return;
     }
     try {
@@ -1014,13 +1046,15 @@ function MainApp() {
           <div className="max-w-md w-full space-y-8">
             <div className="text-center">
               <img src={logo} alt="Elo" className="mx-auto h-16 w-auto mb-6 dark:invert" />
-              <h2 className="text-xl font-medium tracking-tight">Completa o teu perfil</h2>
+                  <h2 className="text-xl font-medium tracking-tight">Completa o teu perfil</h2>
+                  <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">A tua conta fica ativa assim que terminares o perfil — não precisas de esperar por aprovação.</p>
               <div className="flex justify-center gap-2 mt-4 text-xs text-gray-400">
                 <span className={onboardingStep >= 1 ? "text-black dark:text-white font-semibold" : ""}>1. Dados</span> •
                 <span className={onboardingStep >= 2 ? "text-black dark:text-white font-semibold" : ""}>2. Percurso</span> •
                 <span className={onboardingStep >= 3 ? "text-black dark:text-white font-semibold" : ""}>3. Objetivos</span>
               </div>
             </div>
+            {authError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{authError}</p>}
             <form onSubmit={onboardingStep === 3 ? handleOnboardingSubmit : (e) => { e.preventDefault(); setOnboardingStep(onboardingStep + 1); }} className="space-y-4">
               {onboardingStep === 1 && (
                 <>
@@ -1047,7 +1081,7 @@ function MainApp() {
               <div className="flex justify-between gap-4 pt-4">
                 {onboardingStep > 1 && <button type="button" onClick={() => setOnboardingStep(onboardingStep - 1)} className={`w-1/2 py-3 border border-gray-300 dark:border-gray-800 rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-900 ${btnFocus}`}>Voltar</button>}
                 <button type="submit" className={`py-3 bg-black text-white dark:bg-white dark:text-black rounded-lg text-sm font-medium ${onboardingStep === 1 ? 'w-full' : 'w-1/2'} ${btnFocus}`}>
-                  {onboardingStep === 3 ? 'Submeter Pedido' : 'Continuar'}
+                  {onboardingStep === 3 ? 'Concluir e entrar' : 'Continuar'}
                 </button>
               </div>
             </form>
@@ -1503,7 +1537,7 @@ function MainApp() {
                       </p>
                     </div>
                     {!viewingProfileUid || viewingProfileUid === user.uid ? (
-                      <button onClick={() => { setSettingsTab('perfil'); setActiveModal('settings'); }} className={`text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>Editar Perfil</button>
+                      <button onClick={() => { setEditFormData({ ...activeProfile }); setActiveModal('editProfile'); }} className={`text-xs border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>Editar Perfil</button>
                     ) : (
                       <div className="flex gap-3 w-full md:w-auto">
                         {activeProfile.acceptsMeetings !== false && <button onClick={() => { setMeetingData({ targetUid: activeProfile.uid, date: '', time: '', message: '' }); setActiveModal('createMeeting'); }} className={`flex-1 md:flex-none text-xs bg-black text-white dark:bg-white dark:text-black px-4 py-2 rounded-xl font-medium ${btnFocus}`}>Reunião</button>}
@@ -1563,10 +1597,12 @@ function MainApp() {
                   <div className="text-right text-[10px] text-gray-400">{newPostText.length}/500</div>
                 </div>
                 <div className="space-y-2">
-                  <label htmlFor="post-image-url" className="text-xs font-medium flex items-center gap-2"><Link2 size={14} /> Link da imagem (opcional)</label>
-                  <input id="post-image-url" type="url" inputMode="url" placeholder="https://..." value={newPostImage || ''} onChange={e => setNewPostImage(e.target.value)} className="w-full border border-gray-200 dark:border-gray-800 bg-transparent p-3 rounded-xl text-sm focus:outline-none focus:border-black dark:focus:border-white" />
-                  <p className="text-[10px] text-gray-400">A imagem tem de estar online e usar HTTPS. Upload direto não está disponível no plano gratuito.</p>
+                  <label htmlFor="post-image-file" className="text-xs font-medium flex items-center gap-2"><ImagePlus size={14} /> Adicionar imagem do dispositivo (opcional)</label>
+                  <input id="post-image-file" aria-label="Escolher imagem para a publicação" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleLocalImageChange(event, 'post')} className="block w-full text-xs text-gray-500 file:mr-3 file:rounded-lg file:border-0 file:bg-gray-100 dark:file:bg-gray-900 file:px-3 file:py-2 file:text-xs file:text-current" />
+                  <p className="text-[10px] text-gray-400">JPG, PNG ou WebP até 10 MB. A imagem é comprimida no teu dispositivo antes de ser guardada.</p>
                   {newPostImage && <img src={newPostImage} alt="Pré-visualização" onError={handleImageError} className="max-h-48 rounded-xl object-cover border border-gray-200 dark:border-gray-800" />}
+                  {newPostImage && <button type="button" onClick={() => setNewPostImage(null)} className={`text-xs text-gray-500 underline rounded-sm ${btnFocus}`}>Remover imagem</button>}
+                  {imageProcessing === 'post' && <p role="status" className="text-xs text-gray-500">A preparar imagem…</p>}
                 </div>
                 <div className="flex justify-end gap-3 pt-2">
                   <button type="button" onClick={() => { setActiveModal('none'); setEditingPostId(null); setNewPostText(''); setNewPostImage(null); }} className={`px-4 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl text-xs ${btnFocus}`}>Cancelar</button>
@@ -1636,9 +1672,9 @@ function MainApp() {
           </div>
         )}
 
-        {activeModal === 'settings' && editFormData && (
+        {activeModal === 'settings' && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-0 w-full max-w-3xl flex flex-col md:flex-row max-h-[90vh] animate-modal overflow-hidden">
+            <div role="dialog" aria-modal="true" aria-label="Definições" className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-2xl p-0 w-full max-w-3xl flex flex-col md:flex-row max-h-[90vh] animate-modal overflow-hidden">
               
               <div className="md:w-48 bg-gray-50 dark:bg-gray-900 border-b md:border-b-0 md:border-r border-gray-200 dark:border-gray-800 p-4 shrink-0 overflow-x-auto md:overflow-y-auto">
                 <div className="flex justify-between items-center mb-6 hidden md:flex">
@@ -1657,9 +1693,6 @@ function MainApp() {
                   <button onClick={() => setSettingsTab('notificacoes')} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${settingsTab === 'notificacoes' ? 'bg-white dark:bg-black shadow-sm font-semibold' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} ${btnFocus}`}>
                     <Bell size={16}/> Notificações
                   </button>
-                  <button onClick={() => setSettingsTab('perfil')} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${settingsTab === 'perfil' ? 'bg-white dark:bg-black shadow-sm font-semibold' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} ${btnFocus}`}>
-                    <Pencil size={16}/> Editar Perfil
-                  </button>
                 </div>
               </div>
 
@@ -1673,10 +1706,22 @@ function MainApp() {
                 </div>
 
                 {settingsTab === 'aparencia' && (
-                  <div className="flex items-center justify-between text-sm py-4">
-                    <span>Modo Escuro</span>
-                    <button onClick={() => setIsDarkMode(!isDarkMode)} className={`border border-gray-300 dark:border-gray-700 px-4 py-2 rounded-xl text-xs ${btnFocus}`}>{isDarkMode ? 'Ativo' : 'Inativo'}</button>
-                  </div>
+                  <section className="space-y-4 text-sm py-2">
+                    <div>
+                      <h4 className="font-semibold">Tema da aplicação</h4>
+                      <p className="text-xs text-gray-500 mt-1">O modo claro é a predefinição. A tua escolha fica guardada neste dispositivo.</p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <button type="button" aria-pressed={!isDarkMode} onClick={() => setIsDarkMode(false)} className={`flex items-center gap-3 border rounded-xl p-4 text-left transition-colors ${!isDarkMode ? 'border-black bg-gray-50 dark:border-white dark:bg-gray-900' : 'border-gray-200 dark:border-gray-800'} ${btnFocus}`}>
+                        <Sun size={18} />
+                        <span><strong className="block text-sm">Modo claro</strong><span className="text-xs text-gray-500">Fundo claro e texto escuro</span></span>
+                      </button>
+                      <button type="button" aria-pressed={isDarkMode} onClick={() => setIsDarkMode(true)} className={`flex items-center gap-3 border rounded-xl p-4 text-left transition-colors ${isDarkMode ? 'border-black bg-gray-50 dark:border-white dark:bg-gray-900' : 'border-gray-200 dark:border-gray-800'} ${btnFocus}`}>
+                        <Moon size={18} />
+                        <span><strong className="block text-sm">Modo escuro</strong><span className="text-xs text-gray-500">Fundo escuro e texto claro</span></span>
+                      </button>
+                    </div>
+                  </section>
                 )}
 
                 {settingsTab === 'conta' && (
@@ -1725,64 +1770,20 @@ function MainApp() {
                   </div>
                 )}
 
-                {settingsTab === 'perfil' && (
-                  <form onSubmit={handleUpdateProfile} className="space-y-8 text-sm">
-                    
-                    <div className="space-y-4">
-                      <div className="h-32 bg-gray-100 dark:bg-gray-800 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700">
-                        {editFormData.coverUrl && <img src={editFormData.coverUrl} className="w-full h-full object-cover" alt="Pré-visualização da capa" onError={handleImageError} />}
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
-                        <div className="flex items-center gap-3">
-                          <div className="w-16 h-16 bg-gray-200 dark:bg-gray-700 rounded-full border-2 border-white dark:border-black flex items-center justify-center font-bold text-xl uppercase overflow-hidden shrink-0">
-                            <span>{editFormData.name.charAt(0)}</span>
-                            {editFormData.avatarUrl && <img src={editFormData.avatarUrl} className="w-full h-full object-cover" alt="Pré-visualização do perfil" onError={handleImageError} />}
-                          </div>
-                          <span className="text-xs text-gray-500">Pré-visualização</span>
-                        </div>
-                        <div className="space-y-3">
-                          <input aria-label="Link HTTPS da imagem de capa" type="url" inputMode="url" placeholder="Link HTTPS da imagem de capa" value={editFormData.coverUrl || ''} onChange={e => setEditFormData({ ...editFormData, coverUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                          <input aria-label="Link HTTPS da imagem de perfil" type="url" inputMode="url" placeholder="Link HTTPS da imagem de perfil" value={editFormData.avatarUrl || ''} onChange={e => setEditFormData({ ...editFormData, avatarUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                        </div>
-                      </div>
-                      <p className="text-[10px] text-gray-400">Cola links HTTPS de imagens que já estejam online. O Elo não faz upload de ficheiros neste plano gratuito.</p>
-                    </div>
-
-                    <div className="pt-6 space-y-4">
-                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 pb-1 border-b border-gray-100 dark:border-gray-900">Informação Básica</h4>
-                      <input type="text" placeholder="Nome" value={editFormData.name} onChange={e => setEditFormData({ ...editFormData, name: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <input type="text" placeholder="Cargo" value={editFormData.role} onChange={e => setEditFormData({ ...editFormData, role: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                        <input type="text" placeholder="Empresa / Projeto" value={editFormData.company || ''} onChange={e => setEditFormData({ ...editFormData, company: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                      </div>
-                      <input type="text" placeholder="Localização" value={editFormData.location} onChange={e => setEditFormData({ ...editFormData, location: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                    </div>
-
-                    <div className="space-y-4">
-                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 pb-1 border-b border-gray-100 dark:border-gray-900">Sobre Ti</h4>
-                      <div>
-                        <textarea maxLength={300} placeholder="O teu Pitch curto" value={editFormData.pitch} onChange={e => setEditFormData({ ...editFormData, pitch: e.target.value })} required className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
-                        <div className="text-right text-[10px] text-gray-400">{editFormData.pitch.length}/300</div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-4">
-                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 pb-1 border-b border-gray-100 dark:border-gray-900">Objetivos</h4>
-                      <div>
-                        <textarea maxLength={300} placeholder="O que procuras no Elo?" value={editFormData.lookingFor || ''} onChange={e => setEditFormData({ ...editFormData, lookingFor: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 h-24 focus:outline-none focus:border-black dark:focus:border-white" />
-                        <div className="text-right text-[10px] text-gray-400">{(editFormData.lookingFor || '').length}/300</div>
-                      </div>
-                      <input type="url" placeholder="URL do LinkedIn" value={editFormData.linkedinUrl || ''} onChange={e => setEditFormData({ ...editFormData, linkedinUrl: e.target.value })} className="w-full border p-3 rounded-xl bg-transparent border-gray-200 dark:border-gray-800 focus:outline-none focus:border-black dark:focus:border-white" />
-                    </div>
-                    
-                    <div className="pt-2">
-                      <button type="submit" className={`w-full py-3 bg-black text-white dark:bg-white dark:text-black rounded-xl font-medium ${btnFocus}`}>Guardar Alterações</button>
-                    </div>
-                  </form>
-                )}
               </div>
             </div>
           </div>
+        )}
+
+        {activeModal === 'editProfile' && editFormData && (
+          <ProfileEditorModal
+            profile={editFormData}
+            imageProcessing={imageProcessing}
+            onChange={setEditFormData}
+            onImageChange={handleLocalImageChange}
+            onSubmit={handleUpdateProfile}
+            onClose={() => setActiveModal('none')}
+          />
         )}
 
         {activeModal === 'planos' && (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOptionalHttpsUrl, normalizeProfile } from '../src/profile';
+import { IMAGE_DATA_URL_LIMITS, isOptionalHttpsUrl, isOptionalImageSource, normalizeProfile } from '../src/profile';
 
 describe('profile normalization', () => {
   it('maps legacy aliases and list-style goals into the current profile shape', () => {
@@ -47,5 +47,14 @@ describe('profile normalization', () => {
     expect(isOptionalHttpsUrl('http://images.example/photo.jpg')).toBe(false);
     expect(isOptionalHttpsUrl('data:image/png;base64,AAA')).toBe(false);
     expect(isOptionalHttpsUrl('https://user:pass@images.example/photo.jpg')).toBe(false);
+  });
+
+  it('accepts bounded local JPEG data and rejects unsupported or oversized image data', () => {
+    const localJpeg = 'data:image/jpeg;base64,aGVsbG8=';
+    expect(isOptionalImageSource(localJpeg, IMAGE_DATA_URL_LIMITS.avatar)).toBe(true);
+    expect(isOptionalImageSource('data:image/png;base64,aGVsbG8=', IMAGE_DATA_URL_LIMITS.avatar)).toBe(false);
+    expect(isOptionalImageSource(`${localJpeg}${'A'.repeat(IMAGE_DATA_URL_LIMITS.avatar)}`, IMAGE_DATA_URL_LIMITS.avatar)).toBe(false);
+    expect(normalizeProfile('local', { avatarUrl: localJpeg }).avatarUrl).toBe(localJpeg);
+    expect(normalizeProfile('local', { avatarUrl: 'data:image/svg+xml;base64,PHN2Zz4=' }).avatarUrl).toBe('');
   });
 });

@@ -73,11 +73,19 @@ describe('Firestore rules', () => {
     await testEnv.cleanup();
   });
 
-  it('allows a member to submit their own pending application but not self-approve', async () => {
+  it('lets a signed-in newcomer activate their account with an atomic private/public profile batch', async () => {
     const db = testEnv.authenticatedContext('new-member', { email: 'new-member@elo.test' }).firestore();
-    const application = { ...baseProfile('new-member', 'New Member'), status: 'pending' };
-    await assertSucceeds(setDoc(doc(db, 'accessRequests/new-member'), application));
-    await assertFails(updateDoc(doc(db, 'accessRequests/new-member'), { status: 'approved' }));
+    const application = baseProfile('new-member', 'New Member');
+    const { email: _privateEmail, ...publicProfile } = application;
+
+    await assertFails(setDoc(doc(db, 'accessRequests/unpaired'), baseProfile('unpaired', 'Unpaired')));
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'accessRequests/new-member'), application);
+    batch.set(doc(db, 'profiles/new-member'), publicProfile);
+    await assertSucceeds(batch.commit());
+    expect((await getDoc(doc(db, 'profiles/new-member'))).data()?.status).toBe('approved');
+    await assertFails(updateDoc(doc(db, 'accessRequests/new-member'), { status: 'rejected' }));
   });
 
   it('allows a custom-claim administrator to approve and publish a member atomically', async () => {
@@ -118,6 +126,34 @@ describe('Firestore rules', () => {
     batch.set(doc(db, 'profiles/alice'), { name: 'Alice Updated', updatedAt: new Date() }, { merge: true });
     await assertSucceeds(batch.commit());
     await assertFails(updateDoc(doc(db, 'profiles/alice'), { name: 'Forged Public Name' }));
+  });
+
+  it('allows compact local JPEG images in profiles and posts, but rejects invalid or oversized images', async () => {
+    await seedApprovedMember('alice', 'Alice');
+    const db = testEnv.authenticatedContext('alice', { email: 'alice@elo.test' }).firestore();
+    const localImage = 'data:image/jpeg;base64,aGVsbG8=';
+    const profileBatch = writeBatch(db);
+    profileBatch.update(doc(db, 'accessRequests/alice'), { avatarUrl: localImage });
+    profileBatch.set(doc(db, 'profiles/alice'), { avatarUrl: localImage }, { merge: true });
+    await assertSucceeds(profileBatch.commit());
+
+    const post = {
+      authorUid: 'alice', authorName: 'Alice', authorRole: 'Founder', content: 'Local image',
+      imageUrl: localImage, likes: [], comments: [], timestamp: new Date().toISOString(), createdAt: new Date(),
+    };
+    await assertSucceeds(setDoc(doc(db, 'posts/local-image'), post));
+
+    const invalidBatch = writeBatch(db);
+    const invalidImage = 'data:image/svg+xml;base64,PHN2Zz4=';
+    invalidBatch.update(doc(db, 'accessRequests/alice'), { avatarUrl: invalidImage });
+    invalidBatch.set(doc(db, 'profiles/alice'), { avatarUrl: invalidImage }, { merge: true });
+    await assertFails(invalidBatch.commit());
+
+    const oversizedBatch = writeBatch(db);
+    const oversizedImage = `data:image/jpeg;base64,${'A'.repeat(110000)}`;
+    oversizedBatch.update(doc(db, 'accessRequests/alice'), { avatarUrl: oversizedImage });
+    oversizedBatch.set(doc(db, 'profiles/alice'), { avatarUrl: oversizedImage }, { merge: true });
+    await assertFails(oversizedBatch.commit());
   });
 
   it('allows a request and its notification atomically, then allows only the recipient to accept', async () => {
@@ -246,7 +282,7 @@ describe('Firestore rules', () => {
     await assertFails(updateDoc(post, { content: 'Modified by Bob' }));
   });
 
-  it('allows safe HTTPS profile links but rejects data URLs and insecure HTTP links', async () => {
+  it('allows safe HTTPS and bounded local JPEG profile images but rejects unsupported data URLs', async () => {
     await seedApprovedMember('alice', 'Alice');
     const db = testEnv.authenticatedContext('alice', { email: 'alice@elo.test' }).firestore();
     const privateRef = doc(db, 'accessRequests/alice');
@@ -261,9 +297,15 @@ describe('Firestore rules', () => {
     safeBatch.update(privateRef, { avatarUrl: 'https://images.example/alice.jpg' });
     safeBatch.set(publicRef, { avatarUrl: 'https://images.example/alice.jpg' }, { merge: true });
     await assertSucceeds(safeBatch.commit());
+
+    const localJpegBatch = writeBatch(db);
+    const localJpeg = 'data:image/jpeg;base64,AA==';
+    localJpegBatch.update(privateRef, { avatarUrl: localJpeg });
+    localJpegBatch.set(publicRef, { avatarUrl: localJpeg }, { merge: true });
+    await assertSucceeds(localJpegBatch.commit());
   });
 
-  it('requires HTTPS when a member adds an image link to a post', async () => {
+  it('requires HTTPS or a bounded local JPEG when a member adds an image to a post', async () => {
     await seedApprovedMember('alice', 'Alice');
     const db = testEnv.authenticatedContext('alice', { email: 'alice@elo.test' }).firestore();
     const postData = {
@@ -274,7 +316,10 @@ describe('Firestore rules', () => {
     await assertFails(setDoc(doc(db, 'posts/http-image'), {
       ...postData, imageUrl: 'http://images.example/photo.jpg',
     }));
-    await assertFails(setDoc(doc(db, 'posts/data-image'), {
+    await assertFails(setDoc(doc(db, 'posts/unsupported-data-image'), {
+      ...postData, imageUrl: 'data:image/png;base64,AA==',
+    }));
+    await assertSucceeds(setDoc(doc(db, 'posts/local-jpeg'), {
       ...postData, imageUrl: 'data:image/jpeg;base64,AA==',
     }));
     await assertSucceeds(setDoc(doc(db, 'posts/https-image'), {
