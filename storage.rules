@@ -1,0 +1,23 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isApprovedMember() {
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/accessRequests/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/accessRequests/$(request.auth.uid)).data.status == 'approved';
+    }
+
+    match /members/{uid}/{allPaths=**} {
+      allow read: if isApprovedMember();
+      allow create, update: if isApprovedMember()
+        && request.auth.uid == uid
+        && request.resource.size < 3 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+      allow delete: if isApprovedMember() && request.auth.uid == uid;
+    }
+  }
+}
