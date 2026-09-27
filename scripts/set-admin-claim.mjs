@@ -21,5 +21,5 @@ if (mode === 'on') claims.admin = true;
 else delete claims.admin;
 
 await auth.setCustomUserClaims(uid, claims);
-await auth.revokeRefreshTokens(uid);
-console.log(`Admin claim ${mode === 'on' ? 'enabled' : 'removed'} for ${uid}. The member must sign in again for the new claim to appear.`);
+if (mode === 'off') await auth.revokeRefreshTokens(uid);
+console.log(`Admin claim ${mode === 'on' ? 'enabled' : 'removed'} for ${uid}. The member must sign out and sign in again for the change to appear.`);
