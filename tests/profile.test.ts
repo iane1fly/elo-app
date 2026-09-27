@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { IMAGE_DATA_URL_LIMITS, isOptionalHttpsUrl, isOptionalImageSource, normalizeProfile } from '../src/profile';
+import { IMAGE_DATA_URL_LIMITS, isOptionalHttpsUrl, isOptionalImageSource, isValidUsername, normalizeProfile, normalizeUsername } from '../src/profile';
 
 describe('profile normalization', () => {
+  it('normalizes usernames and accepts only safe 3–20 character handles', () => {
+    expect(normalizeUsername('  Ian.Founder  ')).toBe('ian.founder');
+    expect(isValidUsername('Ian.Founder')).toBe(true);
+    expect(isValidUsername('ian_2')).toBe(true);
+    expect(isValidUsername('jo')).toBe(false);
+    expect(isValidUsername('_ian')).toBe(false);
+    expect(isValidUsername('ian_')).toBe(false);
+    expect(isValidUsername('ian founder')).toBe(false);
+    expect(isValidUsername('a'.repeat(21))).toBe(false);
+    expect(normalizeProfile('legacy', { name: 'Legacy' }).username).toBe('');
+    expect(normalizeProfile('member', { username: ' HELLO-1 ' }).username).toBe('hello-1');
+  });
+
   it('maps legacy aliases and list-style goals into the current profile shape', () => {
     const profile = normalizeProfile('legacy-uid', {
       name: 'Founder',

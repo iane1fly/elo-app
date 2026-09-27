@@ -30,6 +30,15 @@ service cloud.firestore {
         && (value == '' || value.matches('https://.+'));
     }
 
+    function validUsername(value) {
+      return value is string
+        && value.matches('^[a-z0-9][a-z0-9._-]{1,18}[a-z0-9]$');
+    }
+
+    function validOptionalUsername(data) {
+      return !data.keys().hasAny(['username']) || validUsername(data.username);
+    }
+
     function safeImageSource(value, maxInlineLength) {
       return value is string
         && (value == ''
@@ -63,16 +72,18 @@ service cloud.firestore {
       return request.resource.data.uid == uid
         && request.resource.data.status == 'approved'
         && request.resource.data.keys().hasOnly([
-          'uid', 'name', 'role', 'company', 'location', 'pitch', 'lookingFor',
+          'uid', 'username', 'name', 'role', 'company', 'location', 'pitch', 'lookingFor',
           'avatarUrl', 'coverUrl', 'linkedinUrl', 'visibleInNetwork',
           'acceptsMeetings', 'status', 'createdAt', 'updatedAt'
         ])
+        && validOptionalUsername(request.resource.data)
         && validProfileDetails(request.resource.data);
     }
 
     function profileMatchesApplication(uid) {
       let application = getAfter(/databases/$(database)/documents/accessRequests/$(uid)).data;
       return application.status == 'approved'
+        && request.resource.data.get('username', '') == application.get('username', '')
         && request.resource.data.name == application.get('name', '')
         && request.resource.data.role == application.get('role', '')
         && request.resource.data.company == application.get('company', '')
@@ -138,15 +149,18 @@ service cloud.firestore {
         && request.auth.uid == uid
         && request.resource.data.uid == uid
         && request.resource.data.status == 'approved'
+        && validUsername(request.resource.data.get('username', ''))
         && request.resource.data.email is string
         && request.resource.data.email.size() <= 320
         && request.resource.data.keys().hasOnly([
-          'uid', 'email', 'name', 'location', 'role', 'company', 'pitch', 'lookingFor',
+          'uid', 'email', 'username', 'name', 'location', 'role', 'company', 'pitch', 'lookingFor',
           'avatarUrl', 'coverUrl', 'linkedinUrl', 'visibleInNetwork', 'acceptsMeetings',
           'status', 'createdAt'
         ])
         && validProfileDetails(request.resource.data)
-        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.status == 'approved';
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.status == 'approved'
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.get('username', '') == request.resource.data.username
+        && getAfter(/databases/$(database)/documents/usernames/$(request.resource.data.username)).data.username == request.resource.data.username;
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
       allow update: if isAdmin()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
@@ -163,6 +177,19 @@ service cloud.firestore {
           && request.resource.data.email.size() <= 320
           && validProfileDetails(request.resource.data));
       allow delete: if signedIn() && request.auth.uid == uid || isAdmin();
+    }
+
+    match /usernames/{username} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if signedIn()
+        && validUsername(username)
+        && request.resource.data.keys().hasOnly(['username'])
+        && request.resource.data.username == username
+        && !exists(/databases/$(database)/documents/usernames/$(username))
+        && getAfter(/databases/$(database)/documents/accessRequests/$(request.auth.uid)).data.get('username', '') == username
+        && getAfter(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.get('username', '') == username;
+      allow update, delete: if false;
     }
 
     match /profiles/{uid} {

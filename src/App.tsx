@@ -22,6 +22,7 @@ import {
   collection,
   query,
   where,
+  getDoc,
   getDocs,
   serverTimestamp,
   addDoc,
@@ -45,7 +46,7 @@ import {
   watchConnections,
   type NetworkConnection,
 } from './network';
-import { IMAGE_DATA_URL_LIMITS, isOptionalHttpsUrl, isOptionalImageSource, normalizeProfile, type AccessStatus, type UserProfile } from './profile';
+import { IMAGE_DATA_URL_LIMITS, isOptionalHttpsUrl, isOptionalImageSource, isValidUsername, normalizeProfile, normalizeUsername, type AccessStatus, type UserProfile } from './profile';
 
 interface Post {
   id: string;
@@ -154,8 +155,10 @@ function MainApp() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [isSignUp, setIsSignUp] = useState(false);
+  const [usernameInput, setUsernameInput] = useState('');
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
   const [authError, setAuthError] = useState('');
 
   const [onboardingStep, setOnboardingStep] = useState(1);
@@ -509,9 +512,35 @@ function MainApp() {
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
+    if (isSignUp) {
+      const username = normalizeUsername(usernameInput);
+      if (!isValidUsername(username)) {
+        setAuthError('Usa 3–20 caracteres: letras, números, ponto, hífen ou underscore. Começa e termina com letra ou número.');
+        return;
+      }
+      if (passwordInput.length < 6) {
+        setAuthError('A palavra-passe deve ter pelo menos 6 caracteres.');
+        return;
+      }
+      if (passwordInput !== confirmPasswordInput) {
+        setAuthError('As palavras-passe não coincidem.');
+        return;
+      }
+      try {
+        const reservation = await getDoc(doc(db, 'usernames', username));
+        if (reservation.exists()) {
+          setAuthError('Esse nome de utilizador já está em uso. Escolhe outro.');
+          return;
+        }
+      } catch {
+        setAuthError('Não foi possível verificar o nome de utilizador. Tenta novamente.');
+        return;
+      }
+      setUsernameInput(username);
+    }
     try {
-      if (isSignUp) await createUserWithEmailAndPassword(auth, emailInput, passwordInput);
-      else await signInWithEmailAndPassword(auth, emailInput, passwordInput);
+      if (isSignUp) await createUserWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
+      else await signInWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
     } catch (err: any) {
       let msg = "Erro na autenticação.";
       if (err.code === 'auth/invalid-email') msg = "Email inválido.";
@@ -527,18 +556,35 @@ function MainApp() {
   const handleOnboardingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    const username = normalizeUsername(usernameInput);
+    if (!isValidUsername(username)) {
+      setAuthError('Usa 3–20 caracteres: letras, números, ponto, hífen ou underscore. Começa e termina com letra ou número.');
+      setOnboardingStep(1);
+      return;
+    }
+    setUsernameInput(username);
     try {
+      const reservation = await getDoc(doc(db, 'usernames', username));
+      if (reservation.exists()) {
+        setAuthError('Esse nome de utilizador já está em uso. Escolhe outro.');
+        setOnboardingStep(1);
+        return;
+      }
       const payload: UserProfile = {
-        uid: user.uid, email: user.email || '', ...onboardingData, status: 'approved',
+        uid: user.uid, email: user.email || '', username, ...onboardingData, status: 'approved',
         avatarUrl: '', coverUrl: '', linkedinUrl: '',
         visibleInNetwork: true, acceptsMeetings: true, createdAt: serverTimestamp()
       };
       const batch = writeBatch(db);
       batch.set(doc(db, 'accessRequests', user.uid), payload);
       batch.set(doc(db, 'profiles', user.uid), publicProfileFrom(payload));
+      batch.set(doc(db, 'usernames', username), { username });
       await batch.commit();
       setAuthError('');
-    } catch { setAuthError('Não foi possível criar o perfil. Tenta novamente.'); }
+    } catch {
+      setAuthError('Não foi possível ativar a conta. Confirma se o nome de utilizador ainda está disponível e tenta novamente.');
+      setOnboardingStep(1);
+    }
   };
 
   const handleCreatePost = async (e: React.FormEvent) => {
@@ -941,6 +987,7 @@ function MainApp() {
 
   const publicProfileFrom = (profile: UserProfile) => ({
     uid: profile.uid,
+    ...(profile.username ? { username: profile.username } : {}),
     name: profile.name,
     role: profile.role,
     company: profile.company || '',
@@ -1059,6 +1106,8 @@ function MainApp() {
             <form onSubmit={onboardingStep === 3 ? handleOnboardingSubmit : (e) => { e.preventDefault(); setOnboardingStep(onboardingStep + 1); }} className="space-y-4">
               {onboardingStep === 1 && (
                 <>
+                  <input type="text" placeholder="Nome de utilizador" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} minLength={3} maxLength={20} autoComplete="username" autoCapitalize="none" required aria-describedby="username-help" className="w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
+                  <p id="username-help" className="-mt-2 text-[10px] text-gray-400">3–20 caracteres: letras, números, ponto, hífen ou underscore; sem espaços.</p>
                   <input type="text" placeholder="Nome Completo" value={onboardingData.name} onChange={e => setOnboardingData({ ...onboardingData, name: e.target.value })} required className="w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
                   <input type="text" placeholder="Localização" value={onboardingData.location} onChange={e => setOnboardingData({ ...onboardingData, location: e.target.value })} required className="w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
                 </>
@@ -1531,6 +1580,7 @@ function MainApp() {
                   <div className="flex flex-col md:flex-row md:justify-between items-start mb-6 gap-4">
                     <div className="space-y-1">
                       <h2 className="text-2xl font-bold">{activeProfile.name}</h2>
+                      {activeProfile.username && <p className="text-xs text-gray-400">@{activeProfile.username}</p>}
                       <p className="text-sm text-gray-500">{activeProfile.role} • {activeProfile.location}</p>
                       <p className="text-xs text-gray-400 pt-1">
                         {activeProfilePostCount !== null ? `${activeProfilePostCount} Publicaç${activeProfilePostCount === 1 ? 'ão' : 'ões'} • ` : ''} 
@@ -1899,8 +1949,13 @@ function MainApp() {
         </div>
 
         <form onSubmit={handleEmailAuth} className="space-y-5">
-          <input type="email" placeholder="Email" value={emailInput} onChange={e => setEmailInput(e.target.value)} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
-          <input type="password" placeholder="Palavra-passe" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
+          {isSignUp && <div className="space-y-1">
+            <input type="text" placeholder="Nome de utilizador" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} minLength={3} maxLength={20} autoComplete="username" autoCapitalize="none" required aria-describedby="signup-username-help" className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
+            <p id="signup-username-help" className="text-[10px] text-gray-400">3–20 caracteres; letras, números, ponto, hífen ou underscore.</p>
+          </div>}
+          <input type="email" placeholder="Email" value={emailInput} onChange={e => setEmailInput(e.target.value)} autoComplete="email" required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
+          <input type="password" placeholder="Palavra-passe" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} autoComplete={isSignUp ? 'new-password' : 'current-password'} minLength={isSignUp ? 6 : undefined} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
+          {isSignUp && <input type="password" placeholder="Confirmar palavra-passe" value={confirmPasswordInput} onChange={e => setConfirmPasswordInput(e.target.value)} autoComplete="new-password" minLength={6} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />}
           <div className="pt-4">
             <button type="submit" className={`w-full py-3.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity ${btnFocus}`}>
               {isSignUp ? 'Registar' : 'Entrar'}
