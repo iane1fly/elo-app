@@ -75,7 +75,7 @@ describe('Firestore rules', () => {
 
   it('lets a signed-in newcomer activate their account with an atomic private/public profile batch', async () => {
     const db = testEnv.authenticatedContext('new-member', { email: 'new-member@elo.test' }).firestore();
-    const application = baseProfile('new-member', 'New Member');
+    const application = { ...baseProfile('new-member', 'New Member'), username: 'new.member' };
     const { email: _privateEmail, ...publicProfile } = application;
 
     await assertFails(setDoc(doc(db, 'accessRequests/unpaired'), baseProfile('unpaired', 'Unpaired')));
@@ -83,9 +83,24 @@ describe('Firestore rules', () => {
     const batch = writeBatch(db);
     batch.set(doc(db, 'accessRequests/new-member'), application);
     batch.set(doc(db, 'profiles/new-member'), publicProfile);
+    batch.set(doc(db, 'usernames/new.member'), { username: 'new.member' });
     await assertSucceeds(batch.commit());
     expect((await getDoc(doc(db, 'profiles/new-member'))).data()?.status).toBe('approved');
+    expect((await getDoc(doc(db, 'profiles/new-member'))).data()?.username).toBe('new.member');
     await assertFails(updateDoc(doc(db, 'accessRequests/new-member'), { status: 'rejected' }));
+
+    const duplicateDb = testEnv.authenticatedContext('duplicate-member', { email: 'duplicate@elo.test' }).firestore();
+    const duplicateProfile = { ...baseProfile('duplicate-member', 'Duplicate Member'), username: 'new.member' };
+    const { email: _duplicateEmail, ...duplicatePublicProfile } = duplicateProfile;
+    const duplicateBatch = writeBatch(duplicateDb);
+    duplicateBatch.set(doc(duplicateDb, 'accessRequests/duplicate-member'), duplicateProfile);
+    duplicateBatch.set(doc(duplicateDb, 'profiles/duplicate-member'), duplicatePublicProfile);
+    duplicateBatch.set(doc(duplicateDb, 'usernames/new.member'), { username: 'new.member' });
+    await assertFails(duplicateBatch.commit());
+
+    const publicLookup = testEnv.unauthenticatedContext().firestore();
+    await assertSucceeds(getDoc(doc(publicLookup, 'usernames/new.member')));
+    await assertFails(getDocs(collection(publicLookup, 'usernames')));
   });
 
   it('allows a custom-claim administrator to approve and publish a member atomically', async () => {

@@ -6,6 +6,7 @@ import {
   GithubAuthProvider,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
   signOut,
   updateEmail,
   updatePassword,
@@ -22,6 +23,7 @@ import {
   collection,
   query,
   where,
+  getDoc,
   getDocs,
   serverTimestamp,
   addDoc,
@@ -33,7 +35,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { ThumbsUp, MessageCircle, Share2, ImagePlus, Send, User as UserIcon, Menu, X, Inbox, Users, Bell, Palette, Shield, Calendar, MapPin, ExternalLink, Plus, Sun, Moon } from 'lucide-react';
-import logo from './logo-clean.png';
+import logo from './logo-mark.png';
 import { auth, db } from './firebase';
 import ProfileEditorModal from './ProfileEditorModal';
 import { compressLocalImage, type ImagePurpose } from './image';
@@ -45,7 +47,7 @@ import {
   watchConnections,
   type NetworkConnection,
 } from './network';
-import { IMAGE_DATA_URL_LIMITS, isOptionalHttpsUrl, isOptionalImageSource, normalizeProfile, type AccessStatus, type UserProfile } from './profile';
+import { IMAGE_DATA_URL_LIMITS, isOptionalHttpsUrl, isOptionalImageSource, isValidUsername, normalizeProfile, normalizeUsername, type AccessStatus, type UserProfile } from './profile';
 
 interface Post {
   id: string;
@@ -149,13 +151,18 @@ function MainApp() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
 
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => localStorage.getItem('elo_theme') === 'dark');
+  // Use a fresh preference key so the old dark-by-default value cannot override the new light default.
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => localStorage.getItem('elo_theme_v2') === 'dark');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [isSignUp, setIsSignUp] = useState(false);
+  const [usernameInput, setUsernameInput] = useState('');
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
   const [authError, setAuthError] = useState('');
+  const [authMessage, setAuthMessage] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
 
   const [onboardingStep, setOnboardingStep] = useState(1);
   const [onboardingData, setOnboardingData] = useState({ name: '', location: '', role: '', company: '', pitch: '', lookingFor: '' });
@@ -312,10 +319,10 @@ function MainApp() {
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('elo_theme', 'dark');
+      localStorage.setItem('elo_theme_v2', 'dark');
     } else {
       document.documentElement.classList.remove('dark');
-      localStorage.setItem('elo_theme', 'light');
+      localStorage.setItem('elo_theme_v2', 'light');
     }
   }, [isDarkMode]);
 
@@ -493,51 +500,171 @@ function MainApp() {
     }
   }, [currentTab, viewingProfileUid, user?.uid]);
 
+  const friendlyAuthError = (error: unknown, action: 'login' | 'signup' | 'oauth' | 'reset') => {
+    const code = typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+    if (code === 'auth/invalid-email') return 'Email inválido. Confirma o endereço e tenta novamente.';
+    if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+      return action === 'signup' ? 'Não foi possível criar a conta com estes dados.' : 'Email ou palavra-passe incorretos.';
+    }
+    if (code === 'auth/email-already-in-use') return 'Este email já está registado. Entra na tua conta.';
+    if (code === 'auth/weak-password') return 'A palavra-passe deve ter pelo menos 6 caracteres.';
+    if (code === 'auth/user-disabled') return 'Esta conta está desativada. Contacta a equipa Elo.';
+    if (code === 'auth/too-many-requests') return 'Houve demasiadas tentativas. Aguarda um pouco e tenta novamente.';
+    if (code === 'auth/network-request-failed') return 'Problema de ligação. Verifica a internet e tenta novamente.';
+    if (code === 'auth/operation-not-allowed') return 'Este método de entrada ainda não está ativado. Contacta a equipa Elo.';
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return 'O início de sessão foi cancelado.';
+    if (code === 'auth/popup-blocked') return 'O navegador bloqueou a janela de entrada. Permite pop-ups e tenta novamente.';
+    if (code === 'auth/account-exists-with-different-credential') return 'Já existe uma conta com este email. Entra usando o método original.';
+    if (action === 'reset') return 'Não foi possível enviar o pedido de recuperação. Tenta novamente.';
+    return 'Não foi possível entrar. Confirma os teus dados e tenta novamente.';
+  };
+
   const handleGoogleLogin = async () => {
     setAuthError('');
-    try { await signInWithPopup(auth, new GoogleAuthProvider()); } 
-    catch (err: any) { setAuthError(err.message); }
+    setAuthMessage('');
+    setAuthBusy(true);
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (error) {
+      setAuthError(friendlyAuthError(error, 'oauth'));
+    } finally {
+      setAuthBusy(false);
+    }
   };
 
   const handleGithubLogin = async () => {
     setAuthError('');
-    try { await signInWithPopup(auth, new GithubAuthProvider()); } 
-    catch (err: any) { setAuthError(err.message); }
+    setAuthMessage('');
+    setAuthBusy(true);
+    try {
+      await signInWithPopup(auth, new GithubAuthProvider());
+    } catch (error) {
+      setAuthError(friendlyAuthError(error, 'oauth'));
+    } finally {
+      setAuthBusy(false);
+    }
   };
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
+    setAuthMessage('');
+    setAuthBusy(true);
     try {
-      if (isSignUp) await createUserWithEmailAndPassword(auth, emailInput, passwordInput);
-      else await signInWithEmailAndPassword(auth, emailInput, passwordInput);
-    } catch (err: any) {
-      let msg = "Erro na autenticação.";
-      if (err.code === 'auth/invalid-email') msg = "Email inválido.";
-      else if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') msg = "Password incorreta.";
-      else if (err.code === 'auth/email-already-in-use') msg = "Este email já está registado. Tenta entrar em vez de criar conta.";
-      else if (err.code === 'auth/weak-password') msg = "A palavra-passe deve ter pelo menos 6 caracteres.";
-      setAuthError(msg);
+      if (isSignUp) {
+        const username = normalizeUsername(usernameInput);
+        if (!isValidUsername(username)) {
+          setAuthError('Usa 3–20 caracteres: letras, números, ponto, hífen ou underscore. Começa e termina com letra ou número.');
+          return;
+        }
+        if (passwordInput.length < 6) {
+          setAuthError('A palavra-passe deve ter pelo menos 6 caracteres.');
+          return;
+        }
+        if (passwordInput !== confirmPasswordInput) {
+          setAuthError('As palavras-passe não coincidem.');
+          return;
+        }
+        try {
+          const reservation = await getDoc(doc(db, 'usernames', username));
+          if (reservation.exists()) {
+            setAuthError('Esse nome de utilizador já está em uso. Escolhe outro.');
+            return;
+          }
+        } catch {
+          setAuthError('Não foi possível verificar o nome de utilizador. Tenta novamente.');
+          return;
+        }
+        setUsernameInput(username);
+        await createUserWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
+        setIsSignUp(false);
+        setPasswordInput('');
+        setConfirmPasswordInput('');
+      } else {
+        await signInWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
+      }
+    } catch (error) {
+      setAuthError(friendlyAuthError(error, isSignUp ? 'signup' : 'login'));
+    } finally {
+      setAuthBusy(false);
     }
   };
 
-  const handleLogout = () => { setActiveModal('none'); signOut(auth); };
+  const handlePasswordReset = async () => {
+    setAuthError('');
+    setAuthMessage('');
+    const email = emailInput.trim();
+    if (!email) {
+      setAuthError('Escreve o teu email no campo acima para pedir uma ligação de recuperação.');
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setAuthMessage('Se existir uma conta associada a este email, enviámos uma ligação para redefinir a palavra-passe.');
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code ?? '')
+        : '';
+      if (code === 'auth/user-not-found') {
+        setAuthMessage('Se existir uma conta associada a este email, enviámos uma ligação para redefinir a palavra-passe.');
+      } else {
+        setAuthError(friendlyAuthError(error, 'reset'));
+      }
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    setActiveModal('none');
+    try {
+      await signOut(auth);
+      setIsSignUp(false);
+      setUsernameInput('');
+      setPasswordInput('');
+      setConfirmPasswordInput('');
+      setAuthError('');
+      setAuthMessage('');
+    } catch {
+      showToast('Não foi possível terminar a sessão. Tenta novamente.');
+    }
+  };
 
   const handleOnboardingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    const username = normalizeUsername(usernameInput);
+    if (!isValidUsername(username)) {
+      setAuthError('Usa 3–20 caracteres: letras, números, ponto, hífen ou underscore. Começa e termina com letra ou número.');
+      setOnboardingStep(1);
+      return;
+    }
+    setUsernameInput(username);
     try {
+      const reservation = await getDoc(doc(db, 'usernames', username));
+      if (reservation.exists()) {
+        setAuthError('Esse nome de utilizador já está em uso. Escolhe outro.');
+        setOnboardingStep(1);
+        return;
+      }
       const payload: UserProfile = {
-        uid: user.uid, email: user.email || '', ...onboardingData, status: 'approved',
+        uid: user.uid, email: user.email || '', username, ...onboardingData, status: 'approved',
         avatarUrl: '', coverUrl: '', linkedinUrl: '',
         visibleInNetwork: true, acceptsMeetings: true, createdAt: serverTimestamp()
       };
       const batch = writeBatch(db);
       batch.set(doc(db, 'accessRequests', user.uid), payload);
       batch.set(doc(db, 'profiles', user.uid), publicProfileFrom(payload));
+      batch.set(doc(db, 'usernames', username), { username });
       await batch.commit();
       setAuthError('');
-    } catch { setAuthError('Não foi possível criar o perfil. Tenta novamente.'); }
+    } catch {
+      setAuthError('Não foi possível ativar a conta. Confirma se o nome de utilizador ainda está disponível e tenta novamente.');
+      setOnboardingStep(1);
+    }
   };
 
   const handleCreatePost = async (e: React.FormEvent) => {
@@ -940,6 +1067,7 @@ function MainApp() {
 
   const publicProfileFrom = (profile: UserProfile) => ({
     uid: profile.uid,
+    ...(profile.username ? { username: profile.username } : {}),
     name: profile.name,
     role: profile.role,
     company: profile.company || '',
@@ -1058,6 +1186,8 @@ function MainApp() {
             <form onSubmit={onboardingStep === 3 ? handleOnboardingSubmit : (e) => { e.preventDefault(); setOnboardingStep(onboardingStep + 1); }} className="space-y-4">
               {onboardingStep === 1 && (
                 <>
+                  <input type="text" placeholder="Nome de utilizador" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} minLength={3} maxLength={20} autoComplete="username" autoCapitalize="none" required aria-describedby="username-help" className="w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
+                  <p id="username-help" className="-mt-2 text-[10px] text-gray-400">3–20 caracteres: letras, números, ponto, hífen ou underscore; sem espaços.</p>
                   <input type="text" placeholder="Nome Completo" value={onboardingData.name} onChange={e => setOnboardingData({ ...onboardingData, name: e.target.value })} required className="w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
                   <input type="text" placeholder="Localização" value={onboardingData.location} onChange={e => setOnboardingData({ ...onboardingData, location: e.target.value })} required className="w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white" />
                 </>
@@ -1530,6 +1660,7 @@ function MainApp() {
                   <div className="flex flex-col md:flex-row md:justify-between items-start mb-6 gap-4">
                     <div className="space-y-1">
                       <h2 className="text-2xl font-bold">{activeProfile.name}</h2>
+                      {activeProfile.username && <p className="text-xs text-gray-400">@{activeProfile.username}</p>}
                       <p className="text-sm text-gray-500">{activeProfile.role} • {activeProfile.location}</p>
                       <p className="text-xs text-gray-400 pt-1">
                         {activeProfilePostCount !== null ? `${activeProfilePostCount} Publicaç${activeProfilePostCount === 1 ? 'ão' : 'ões'} • ` : ''} 
@@ -1877,14 +2008,15 @@ function MainApp() {
       </div>
 
       <div className="sm:mx-auto sm:w-full sm:max-w-sm px-6">
-        {authError && <div className="mb-6 p-4 border border-red-500/30 text-red-500 text-xs rounded-xl">{authError}</div>}
+        {authError && <div role="alert" aria-live="assertive" className="mb-6 p-4 border border-red-500/30 text-red-500 text-xs rounded-xl">{authError}</div>}
+        {authMessage && <div role="status" aria-live="polite" className="mb-6 p-4 border border-green-600/30 text-green-700 dark:text-green-400 text-xs rounded-xl">{authMessage}</div>}
         <div className="space-y-4">
-          <button onClick={handleGoogleLogin} className={`w-full flex justify-center items-center py-3.5 px-4 border border-gray-300 dark:border-gray-800 rounded-xl text-sm font-medium hover:border-black dark:hover:border-white transition-colors ${btnFocus}`}>
+          <button type="button" disabled={authBusy} onClick={handleGoogleLogin} className={`w-full flex justify-center items-center py-3.5 px-4 border border-gray-300 dark:border-gray-800 rounded-xl text-sm font-medium hover:border-black dark:hover:border-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${btnFocus}`}>
             <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
             Google
           </button>
           
-          <button onClick={handleGithubLogin} className={`w-full flex justify-center items-center py-3.5 px-4 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity ${btnFocus}`}>
+          <button type="button" disabled={authBusy} onClick={handleGithubLogin} className={`w-full flex justify-center items-center py-3.5 px-4 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${btnFocus}`}>
             <svg className="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 24 24"><path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" /></svg>
             GitHub
           </button>
@@ -1897,18 +2029,28 @@ function MainApp() {
           </div>
         </div>
 
-        <form onSubmit={handleEmailAuth} className="space-y-5">
-          <input type="email" placeholder="Email" value={emailInput} onChange={e => setEmailInput(e.target.value)} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
-          <input type="password" placeholder="Palavra-passe" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
+        <form onSubmit={handleEmailAuth} aria-busy={authBusy} className="space-y-5">
+          {isSignUp && <div className="space-y-1">
+            <input type="text" aria-label="Nome de utilizador" placeholder="Nome de utilizador" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} minLength={3} maxLength={20} autoComplete="username" autoCapitalize="none" required aria-describedby="signup-username-help" className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
+            <p id="signup-username-help" className="text-[10px] text-gray-400">3–20 caracteres; letras, números, ponto, hífen ou underscore.</p>
+          </div>}
+          <input type="email" aria-label="Email" placeholder="Email" value={emailInput} onChange={e => setEmailInput(e.target.value)} autoComplete="email" required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
+          <input type="password" aria-label="Palavra-passe" placeholder="Palavra-passe" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} autoComplete={isSignUp ? 'new-password' : 'current-password'} minLength={isSignUp ? 6 : undefined} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />
+          {!isSignUp && <div className="-mt-3 text-right">
+            <button type="button" disabled={authBusy} onClick={handlePasswordReset} className={`text-xs text-gray-500 underline underline-offset-4 hover:text-black dark:hover:text-white disabled:opacity-50 ${btnFocus} rounded-sm p-1`}>
+              Esqueceste-te da palavra-passe?
+            </button>
+          </div>}
+          {isSignUp && <input type="password" aria-label="Confirmar palavra-passe" placeholder="Confirmar palavra-passe" value={confirmPasswordInput} onChange={e => setConfirmPasswordInput(e.target.value)} autoComplete="new-password" minLength={6} required className="block w-full border-b border-gray-300 dark:border-gray-800 bg-transparent py-3 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors" />}
           <div className="pt-4">
-            <button type="submit" className={`w-full py-3.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity ${btnFocus}`}>
-              {isSignUp ? 'Registar' : 'Entrar'}
+            <button type="submit" disabled={authBusy} className={`w-full py-3.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-sm font-medium hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${btnFocus}`}>
+              {authBusy ? 'A processar…' : isSignUp ? 'Registar' : 'Entrar'}
             </button>
           </div>
         </form>
 
         <div className="mt-8 text-center">
-          <button onClick={() => setIsSignUp(!isSignUp)} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white transition-colors ${btnFocus} rounded-sm p-1`}>
+          <button type="button" disabled={authBusy} onClick={() => { setIsSignUp(current => !current); setAuthError(''); setAuthMessage(''); setConfirmPasswordInput(''); }} className={`text-xs text-gray-500 hover:text-black dark:hover:text-white transition-colors disabled:opacity-50 ${btnFocus} rounded-sm p-1`}>
             {isSignUp ? 'Já tens conta? Entrar' : 'Não tens conta? Criar uma'}
           </button>
         </div>

@@ -3,6 +3,7 @@ export type AccessStatus = 'none' | 'pending' | 'approved' | 'rejected';
 export interface UserProfile {
   uid: string;
   email: string;
+  username?: string;
   name: string;
   location: string;
   role: string;
@@ -23,6 +24,16 @@ export const IMAGE_DATA_URL_LIMITS = {
   cover: 380_000,
   post: 380_000,
 } as const;
+
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,18}[a-z0-9]$/;
+
+export function normalizeUsername(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function isValidUsername(value: string): boolean {
+  return USERNAME_PATTERN.test(normalizeUsername(value));
+}
 
 const JPEG_DATA_URL_PATTERN = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/;
 
@@ -82,6 +93,7 @@ export function normalizeProfile(uid: string, raw: Record<string, unknown>): Use
   return {
     uid: firstText(raw.uid, uid),
     email: text(raw.email),
+    username: normalizeUsername(text(raw.username)),
     name: text(raw.name),
     location: text(raw.location),
     role: text(raw.role),
