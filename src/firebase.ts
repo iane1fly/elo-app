@@ -10,14 +10,10 @@ const requiredFirebaseEnv = [
   'VITE_FIREBASE_APP_ID',
 ] as const;
 
-const missingFirebaseEnv = requiredFirebaseEnv.filter((key) => !import.meta.env[key]);
-if (missingFirebaseEnv.length > 0) {
-  console.warn(`Firebase configuration is incomplete. Missing: ${missingFirebaseEnv.join(', ')}`);
-}
-
 const cleanFirebaseEnv = (value: string | undefined) =>
   value?.trim().replace(/^['\"]|['\"]$/g, '') || undefined;
 
+// Read each Vite variable directly so the bundler can replace the values in the client build.
 const firebaseConfig = {
   apiKey: cleanFirebaseEnv(import.meta.env.VITE_FIREBASE_API_KEY),
   authDomain: cleanFirebaseEnv(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN),
@@ -26,6 +22,13 @@ const firebaseConfig = {
   appId: cleanFirebaseEnv(import.meta.env.VITE_FIREBASE_APP_ID),
   storageBucket: cleanFirebaseEnv(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET),
 };
+
+const missingFirebaseEnv = Object.entries(firebaseConfig)
+  .filter(([, value]) => !value)
+  .map(([key]) => key);
+if (missingFirebaseEnv.length > 0) {
+  throw new Error(`Firebase configuration is incomplete. Missing: ${missingFirebaseEnv.join(', ')}`);
+}
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
